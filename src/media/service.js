@@ -79,7 +79,7 @@ export class MediaManager{
     this.validateWork(work);if(this.active)throw Error('已有素材解析任务运行中');const assets=this.assets(work);if(!assets.length)throw Error('请先导入作品原图、视频、音频或字幕');
     samplePlan(1,Number(options.interval??5),Number(options.maxFrames??60));
     if((options.visionConnectionId||options.asrConnectionId)&&!options.allowModelUpload)throw Error('请先确认允许将所选素材发送到模型连接；云端连接会上传图片或音频');
-    const job={id:randomUUID(),workId:work,status:'running',phase:'准备解析',startedAt:new Date().toISOString(),assetIds:assets.map(a=>a.id),options:{interval:Number(options.interval??5),maxFrames:Number(options.maxFrames??60),visionConnectionId:options.visionConnectionId||'',asrConnectionId:options.asrConnectionId||''},accepted:false,segments:[],warnings:[],text:''};
+    const job={id:randomUUID(),workId:work,status:'running',phase:'准备解析',startedAt:new Date().toISOString(),assetIds:assets.map(a=>a.id),options:{quality:options.quality==='accurate'?'accurate':'balanced',interval:Number(options.interval??5),maxFrames:Number(options.maxFrames??60),visionConnectionId:options.visionConnectionId||'',asrConnectionId:options.asrConnectionId||''},accepted:false,segments:[],warnings:[],text:''};
     const controller=new AbortController();this.active={job,controller};this.saveJob(job);
     this.active.completion=this.process(job,assets,controller.signal).then(async()=>{check(controller.signal);job.status='done';job.completedAt=new Date().toISOString();this.saveJob(job);await onDone(job);}).catch(e=>{job.status=controller.signal.aborted?'cancelled':'error';job.error=e.message;this.saveJob(job);}).finally(async()=>{await rm(path.join(this.root,job.workId,'jobs',job.id),{recursive:true,force:true}).catch(()=>{});this.active=null;});return job;
   }
@@ -113,7 +113,7 @@ export class MediaManager{
         }else if(meta.audio)warnings.push('包含语音，未选择语音转写模型，口述内容未识别');
       }
       if(frames.length){const seen=new Set(),unique=frames.filter(f=>{const hash=createHash('sha256').update(f.bytes).digest('hex');if(seen.has(hash))return false;seen.add(hash);return true;});if(unique.length<frames.length)warnings.push(`跳过${frames.length-unique.length}张完全相同的画面，仅保留首次出现的时间`);frames.splice(0,frames.length,...unique);check(signal);job.phase=`${a.name}：OCR ${frames.length}帧`;this.saveJob(job);
-        const result=await this.recognize(frames.map(f=>f.bytes),path.join(folder,a.id+'-ocr'),p=>{if(!signal.aborted){job.progress=p;this.saveJob(job);}},{signal});check(signal);
+        const result=await this.recognize(frames.map(f=>f.bytes),path.join(folder,a.id+'-ocr'),p=>{if(!signal.aborted){job.progress=p;this.saveJob(job);}},{signal,quality:job.options.quality});check(signal);
         const uncertain=result.pages.filter(p=>!p.text?.trim()||typeof p.confidence!=='number'||p.confidence<80).length;if(uncertain)warnings.push(`${uncertain}帧未识别到文字、置信度低或引擎未提供置信度，请重点核对；置信度不等于准确率`);
         for(let n=0;n<result.pages.length;n++){const p=result.pages[n];if(p.text?.trim())job.segments.push({assetId:a.id,file:a.name,kind:'ocr',time:frames[n].time,frame:frames[n].frame,text:p.text,engine:p.engine,confidence:p.confidence,alternatives:p.alternatives});}
         if(!vision)warnings.push('仅识别画面文字，未启用视觉模型，不会理解无文字画面');

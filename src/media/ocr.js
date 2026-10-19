@@ -16,7 +16,7 @@ export async function windowsRecognize(bytes,folder,index){
   return JSON.parse(await readFile(output,'utf8'));
 }
 export function validImageUrl(value){try{const u=new URL(value);return u.protocol==='https:'&&['douyinpic.com','douyinstatic.com','byteimg.com','ibytedtos.com','pstatp.com'].some(host=>u.hostname===host||u.hostname.endsWith('.'+host));}catch{return false;}}
-export async function recognizeImages(images,folder,onProgress=()=>{},{signal}={}){
+export async function recognizeImages(images,folder,onProgress=()=>{},{signal,quality='balanced'}={}){
   if(!images.length)throw Error('没有可识别的作品图片');
   await mkdir(folder,{recursive:true});
   for(const language of [chi,eng])await copyFile(path.join(language.langPath,`${language.code}.traineddata.gz`),path.join(folder,`${language.code}.traineddata.gz`));
@@ -29,6 +29,12 @@ export async function recognizeImages(images,folder,onProgress=()=>{},{signal}={
     await writeFile(path.join(folder,`source-${i+1}.png`),await sharp(images[i]).png().toBuffer());
     const {data}=await worker.recognize(normalized);const clean=text=>text.trim().replace(/(?<=[\u3400-\u9fff]) +(?=[\u3400-\u9fff])/g,'');
     const alternatives=[{engine:'Tesseract 中英模型',text:clean(data.text),confidence:data.confidence}];
+    if(quality==='accurate'||data.confidence<75){
+      if(signal?.aborted)throw Error('任务已取消');
+      await worker.setParameters({tessedit_pageseg_mode:'11'});
+      const enhanced=await sharp(images[i],{limitInputPixels:50000000}).rotate().resize({width:Math.min((meta.width||1000)*3,4000)}).greyscale().normalise().threshold(175).png().toBuffer();
+      const retry=await worker.recognize(enhanced);alternatives.push({engine:'Tesseract 稀疏文字增强',text:clean(retry.data.text),confidence:retry.data.confidence});await worker.setParameters({tessedit_pageseg_mode:'3'});
+    }
     try{
       const windowsInput=await sharp(images[i]).resize({width:Math.min((meta.width||1000)*3,2400),height:2400,fit:'inside'}).normalise().sharpen().png().toBuffer();
       const result=await windowsRecognize(windowsInput,folder,i+1);
@@ -36,8 +42,10 @@ export async function recognizeImages(images,folder,onProgress=()=>{},{signal}={
     }catch(error){onProgress({systemOcr:'不可用，使用 Tesseract'});}
     const win=alternatives.find(a=>a.engine==='Windows 系统 OCR');
     const chinese=text=>(text.match(/[\u3400-\u9fff]/g)||[]).length;
-    const selected=win&&chinese(win.text)>=Math.max(5,chinese(alternatives[0].text)*0.6)?win:alternatives[0];
-    pages.push({index:i+1,...selected,alternatives});
+    const best=alternatives.filter(a=>a.confidence!==null&&a.text).reverse().sort((a,b)=>b.confidence-a.confidence)[0]||alternatives[0];
+    const selected=win&&(best.confidence<80||chinese(best.text)<5)&&chinese(win.text)>=Math.max(5,chinese(best.text)*0.6)?win:best;
+    const normalize=text=>new Set(text.replace(/\s|[\p{P}\p{S}]/gu,'').toLowerCase());const sets=alternatives.filter(a=>a.text).map(a=>normalize(a.text)),agreement=sets.length>1?Math.min(...sets.slice(1).map(set=>[...sets[0]].filter(c=>set.has(c)).length/Math.max(1,new Set([...sets[0],...set]).size))):null;
+    pages.push({index:i+1,...selected,alternatives,agreement,needsReview:selected.confidence===null||selected.confidence<80||agreement!==null&&agreement<0.7});
   }}
   finally{await worker.terminate();}
   return {status:'done',accepted:false,pages,text:pages.map(p=>`[图片 ${p.index}]\n${p.text||'未识别到文字'}`).join('\n\n'),completedAt:new Date().toISOString()};

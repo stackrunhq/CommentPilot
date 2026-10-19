@@ -5,7 +5,7 @@ globalThis.fetch=async(input,options={})=>{
   const u=new URL(input);if(u.origin!=='https://open.douyin.com'&&u.origin!=='http://127.0.0.1:19999')return originalFetch(input,options);
   const state=JSON.parse(await readFile(process.env.OFFICIAL_FIXTURE_STATE,'utf8'));
   if(u.pathname==='/item/comment/list/'&&process.env.OFFICIAL_FIXTURE_PAGES)await appendFile(process.env.OFFICIAL_FIXTURE_PAGES,String(u.searchParams.get('cursor'))+'\n');
-  if(u.origin==='http://127.0.0.1:19999'){if(process.env.OFFICIAL_FIXTURE_MODELS)await appendFile(process.env.OFFICIAL_FIXTURE_MODELS,options.body+'\n');return Response.json({choices:[{message:{content:'请参考作品已确认的说明。'}}]});}
+  if(u.origin==='http://127.0.0.1:19999'){if(process.env.OFFICIAL_FIXTURE_MODELS)await appendFile(process.env.OFFICIAL_FIXTURE_MODELS,options.body+'\n');const delay=state.modelDelayByModel?.[JSON.parse(options.body).model]||0;if(delay)await new Promise(r=>setTimeout(r,delay));return Response.json({choices:[{message:{content:'请参考作品已确认的说明。'}}]});}
   let data;
   if(u.pathname==='/oauth/access_token/')data={access_token:'fixture-access',refresh_token:'fixture-refresh',scope:'user_info,video.list,item.comment',open_id:'fixture-owner',expires_in:3600};
   else if(u.pathname==='/oauth/userinfo/')data={nickname:'测试作者',e_account_role:null};

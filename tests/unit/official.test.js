@@ -15,7 +15,7 @@ test('OAuth state validation, one-time code exchange and encrypted persistence',
   const url=new URL(client.authorize().url),state=url.searchParams.get('state');
   await assert.rejects(()=>client.accept({code:'code',state:'wrong'}),/校验/);assert.equal(requests.length,0);
   await client.accept({code:'code',state});assert.equal(client.status().accountType,'unknown');assert.equal(client.status().nickname,'作者');
-  assert.equal(db.prepare('SELECT encrypted FROM douyin_official_account').get().encrypted.includes('fixture-access'),false);
+  assert.equal(db.prepare('SELECT encrypted FROM douyin_accounts').get().encrypted.includes('fixture-access'),false);
   client.token=null;await client.load();assert.equal(client.token.open_id,'owner');
   await assert.rejects(()=>client.accept({code:'code',state}),/校验/);assert.equal(requests.length,2);
   assert.equal(JSON.stringify(client.status()).includes('fixture-access'),false);db.close();

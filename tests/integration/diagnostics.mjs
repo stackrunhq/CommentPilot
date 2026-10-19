@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
 const dir=await mkdtemp(path.join(tmpdir(),'commentpilot-diagnostics-ui-')),base='http://127.0.0.1:3281',secret='fixture-credential-SENTINEL';let child,browser;
 async function start(){child=fork('src/app/server.js',[],{env:{...process.env,APP_PORT:'3281',APP_DATA_DIR:dir,APP_BROWSER_FIXTURE:'',DEEPSEEK_API_KEY:''},silent:true});let errors='';child.stderr.on('data',b=>errors+=b);for(let n=0;n<100;n++){try{if((await fetch(base+'/api/health')).ok)return;}catch{}if(child.exitCode!==null)throw Error(errors);await new Promise(r=>setTimeout(r,100));}throw Error('startup timeout');}
-async function stop(){if(!child||child.exitCode!==null)return;await new Promise(resolve=>{child.once('exit',resolve);child.send({type:'shutdown'});setTimeout(()=>child.kill(),5000).unref();});}
+async function stop(){const current=child;if(!current||current.exitCode!==null)return;await new Promise(resolve=>{const timer=setTimeout(()=>current.kill(),5000);timer.unref();current.once('exit',()=>{clearTimeout(timer);resolve();});if(current.connected)current.send({type:'shutdown'},error=>{if(error)current.kill();});else current.kill();});}
 const post=async(action,body={})=>{const res=await fetch(base+'/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','x-local-app':'douyin-reply'},body:JSON.stringify(body)});return {res,data:await res.json()};};
 try{
   await start();await post('works-save',{url:'https://douyin.com/video/123',title:'private-title-SENTINEL',context:'private-background-SENTINEL'});await post('works-select',{id:'123'});await post('knowledge-save',{name:'private-name-SENTINEL',content:'private-knowledge-SENTINEL'});await post('sample',{text:'private-comment-SENTINEL'});

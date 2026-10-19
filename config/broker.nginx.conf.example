@@ -1,0 +1,17 @@
+# Include inside nginx's http context; replace domain and certificate paths.
+limit_req_zone $binary_remote_addr zone=commentpilot:10m rate=10r/s;
+server {
+    listen 443 ssl;
+    server_name auth.example.com;
+    ssl_certificate /etc/letsencrypt/live/auth.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/auth.example.com/privkey.pem;
+    client_max_body_size 256k;
+    location / {
+        limit_req zone=commentpilot burst=20 nodelay;
+        proxy_pass http://127.0.0.1:4321;
+        proxy_read_timeout 40s;
+        proxy_set_header Host $host;
+        # Callback query contains an OAuth code; do not log request URLs.
+        access_log off;
+    }
+}

@@ -1,0 +1,11 @@
+import sharp from 'sharp';
+import {mkdir,writeFile} from 'node:fs/promises';
+import path from 'node:path';
+import {recognizeImages} from '../../src/media/ocr.js';
+const folder=path.resolve('release','qa-ocr-'+Date.now());await mkdir(folder,{recursive:true});
+const lines=['服务恢复及补偿通知','申请时间2026年10月19日','补偿金额100元，请核对规则'];
+const svg='<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="500"><rect width="1600" height="500" fill="white"/>'+lines.map((s,i)=>`<text x="60" y="${100+i*140}" font-family="Microsoft YaHei" font-size="64" fill="black">${s}</text>`).join('')+'</svg>';
+const png=await sharp(Buffer.from(svg)).png().toBuffer();await writeFile(path.join(folder,'fixture.png'),png);const began=Date.now(),result=await recognizeImages([png],path.join(folder,'ocr'),()=>{},{quality:'accurate'});
+const normalize=s=>s.replace(/[\s\p{P}\p{S}]/gu,''),expected=normalize(lines.join('')),actual=normalize(result.pages[0].text);
+const d=Array.from({length:expected.length+1},()=>Array(actual.length+1).fill(0));for(let i=0;i<=expected.length;i++)d[i][0]=i;for(let j=0;j<=actual.length;j++)d[0][j]=j;for(let i=1;i<=expected.length;i++)for(let j=1;j<=actual.length;j++)d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+Number(expected[i-1]!==actual[j-1]));
+const report={fixture:'synthetic Chinese text; not real Douyin long-video accuracy',expected,actual,characterErrorRate:d[expected.length][actual.length]/expected.length,durationMs:Date.now()-began,pages:result.pages};await writeFile(path.join(folder,'report.json'),JSON.stringify(report,null,2));console.log({report:path.join(folder,'report.json'),characterErrorRate:report.characterErrorRate,durationMs:report.durationMs});

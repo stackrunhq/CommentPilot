@@ -3,6 +3,7 @@ import {protectSecret} from '../security/credentials.js';
 import {workId} from '../works/identity.js';
 import {registerSecret} from '../security/redaction.js';
 import {scanComments} from '../comments/scanner.js';
+import {requestSlot} from './request-gate.js';
 
 const origin='https://open.douyin.com';
 export function officialWorkUrl(value){
@@ -26,14 +27,15 @@ export function officialComment(c,openId){
 
 // No cookies, private APIs, or arbitrary URL forwarding. Secrets stay in DPAPI-encrypted SQLite.
 export class DouyinOfficial{
-  constructor(db,{fetcher=fetch,crypt=protectSecret,env=process.env}={}){
-    this.db=db;this.fetcher=fetcher;this.crypt=crypt;this.env=env;this.pending=null;this.token=null;this.cooldown=0;
+  constructor(db,{fetcher=fetch,crypt=protectSecret,env=process.env,slot='default'}={}){
+    this.db=db;this.fetcher=fetcher;this.crypt=crypt;this.env=env;this.slot=slot;this.pending=null;this.token=null;this.cooldown=0;
+    db.exec('CREATE TABLE IF NOT EXISTS douyin_accounts(slot TEXT PRIMARY KEY,encrypted TEXT NOT NULL);');
     db.exec('CREATE TABLE IF NOT EXISTS douyin_official_account (id INTEGER PRIMARY KEY CHECK(id=1), encrypted TEXT NOT NULL); CREATE TABLE IF NOT EXISTS douyin_official_works (account TEXT NOT NULL, work_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(account,work_id));');
   }
-  async load(){const row=this.db.prepare('SELECT encrypted FROM douyin_official_account WHERE id=1').get();if(row)this.token=JSON.parse(await this.crypt(row.encrypted,'unprotect'));registerSecret(this.token?.access_token);registerSecret(this.token?.refresh_token);}
+  async load(){const row=this.db.prepare('SELECT encrypted FROM douyin_accounts WHERE slot=?').get(this.slot)||(this.slot==='default'?this.db.prepare('SELECT encrypted FROM douyin_official_account WHERE id=1').get():null);if(row)this.token=JSON.parse(await this.crypt(row.encrypted,'unprotect'));registerSecret(this.token?.access_token);registerSecret(this.token?.refresh_token);}
   status(){let route=null;try{route=commentRoute(this.token?.scope);}catch{}return {configured:!!(this.env.DOUYIN_CLIENT_KEY&&this.env.DOUYIN_CLIENT_SECRET&&this.env.DOUYIN_REDIRECT_URI),authorized:!!this.token,accountType:'unknown',accountTypeLabel:'官方未返回可可靠分类的身份信息',nickname:this.token?.nickname||'',route,scope:this.token?.scope||'',expiresAt:this.token?.expiresAt||null,cooldownUntil:this.cooldown||null};}
-  async save(){registerSecret(this.token?.access_token);registerSecret(this.token?.refresh_token);const encrypted=await this.crypt(JSON.stringify(this.token));this.db.prepare('INSERT OR REPLACE INTO douyin_official_account VALUES(1,?)').run(encrypted);}
-  async disconnect(){this.token=null;this.pending=null;this.db.prepare('DELETE FROM douyin_official_account').run();return {};}
+  async save(){registerSecret(this.token?.access_token);registerSecret(this.token?.refresh_token);const encrypted=await this.crypt(JSON.stringify(this.token));this.db.prepare('INSERT OR REPLACE INTO douyin_accounts VALUES(?,?)').run(this.slot,encrypted);}
+  async disconnect(){this.token=null;this.pending=null;this.db.prepare('DELETE FROM douyin_accounts WHERE slot=?').run(this.slot);if(this.slot==='default')this.db.prepare('DELETE FROM douyin_official_account').run();return {};}
   authorize(){
     if(!this.status().configured)throw Error('请先由应用管理员配置抖音 Client Key、Client Secret 和平台批准的回调地址');
     const redirect=new URL(this.env.DOUYIN_REDIRECT_URI);if(redirect.protocol!=='https:'&&!['localhost','127.0.0.1'].includes(redirect.hostname))throw Error('授权回调必须使用 HTTPS');
@@ -44,6 +46,8 @@ export class DouyinOfficial{
   }
   async raw(endpoint,{params={},body,form=false,token}={}){
     if(Date.now()<this.cooldown)throw Object.assign(Error('抖音接口处于限流冷却期，请稍后继续'),{retryAt:this.cooldown,upstreamStatus:429});
+    // All account slots in this process share the application's outbound start-rate budget.
+    if(this.fetcher===fetch){await requestSlot(this.env.DOUYIN_CLIENT_KEY||'default',Math.max(50,Math.min(10000,Number(this.env.DOUYIN_MIN_REQUEST_MS)||250)));if(Date.now()<this.cooldown)throw Object.assign(Error('抖音接口处于限流冷却期'),{retryAt:this.cooldown,upstreamStatus:429});}
     const url=new URL(endpoint,origin);for(const [k,v]of Object.entries(params))url.searchParams.set(k,String(v));
     let response;try{response=await this.fetcher(url,{method:body?'POST':'GET',redirect:'error',signal:AbortSignal.timeout(30000),headers:{...(token?{'access-token':token}:{}),...(body?{'Content-Type':form?'application/x-www-form-urlencoded':'application/json'}:{})},...(body?{body:form?new URLSearchParams(body):JSON.stringify(body)}:{})});}catch{throw Error('抖音官方接口连接失败或超时；提交类请求不会自动重试');}
     if(response.status===429){this.cooldown=Date.now()+Math.max(60,Math.min(3600,Number(response.headers.get('retry-after'))||60))*1000;throw Object.assign(Error('抖音接口限流，已停止请求并进入冷却期'),{retryAt:this.cooldown,upstreamStatus:429});}
@@ -64,7 +68,8 @@ export class DouyinOfficial{
     if(String(data.scope).split(/[,\s]+/).includes('user_info')){const info=await this.request('/oauth/userinfo/',{body:{access_token:data.access_token,open_id:data.open_id}});this.token.nickname=info.nickname||'';this.token.accountRole=info.e_account_role??null;await this.save();}
     return this.status();
   }
-  async ready(){
+  async ready(){if(this.refreshing)return this.refreshing;this.refreshing=this.refreshReady();try{return await this.refreshing;}finally{this.refreshing=null;}}
+  async refreshReady(){
     registerSecret(this.token?.access_token);registerSecret(this.token?.refresh_token);
     if(!this.token)throw Error('请先完成抖音官方授权；原浏览器登录不能替代官方授权');
     if(this.token.expiresAt>Date.now()+60000)return;

@@ -1,5 +1,23 @@
 # CommentPilot 开发交接记录
 
+## 最新实现：0.9.0 本轮集中完善（不打包）
+
+用户要求把上一轮待办一次性处理。用户已明确回复抖音应用“尚未申请或仍在审批”，因此真实权限/账号读写、事件订阅、生产域名部署均不可标为实测完成。其余本地源码已集中实现，不要求逐项确认，不执行stage/dist。
+
+- 三条独立WorkScheduler流水线：扫描、模型、发送。云模型并发1～4（默认2，可UI保存），本地Ollama/LMStudio/vLLM相同baseUrl串行；模型不再占用扫描busy锁。按stage领取任务，单作品单阶段不重入。发送串行至少3秒，DouyinOfficial按app共用请求起始门控（DOUYIN_MIN_REQUEST_MS默认250ms，50～10000）；真实额度仍须应用获批后配置。保留原有全量评论保存方式，本轮未实施部分历史写入优化。
+- `src/douyin/accounts.js`独立账号槽位，`douyin_accounts`加密令牌新表，默认槽兼容legacy；刷新单次合并。作品绑定accountSlot，runtime持有对应client，核验按监控账号找client；切换授权账号清空当前作品，避免显示旧账号目标。一个作品的同一会话不跨账号恢复。
+- `src/comments/operations.js`：可配最长等待、积压阈值、暂停生成，转review不删除；批量1～100任务approve/regenerate/reject，当前会话、禁止verify/submission任务批准重发，显式批准草稿可在autoSend=false时继续监听发送。重新生成重置等待起点。评论/模型统计与网页本机通知。
+- `src/knowledge/retrieval.js`按中文双字/英文词检索6段，知识库最多30万字符；完整资料hash与查询无关，refs含片段id/start/text。`import.js`/`import-worker.js`独立Worker（30秒/256MB）解析20MB TXT/MD/DOCX/PDF文本，PDF最多200页；fflate+saxes只解DOCX正文，禁DOCTYPE，PDF禁eval。扫描PDF/旧DOC未支持。新增生产依赖fflate/saxes/pdfjs-dist，生产审计0漏洞。
+- OCR accurate模式增加增强稀疏文字候选；修复总是偏选Windows结果的策略，保留agreement/needsReview。合成中文样本CER由约10.8%降至2.7%，报告 `release/qa-ocr-1792390824838/report.json`，仅37字符左右合成样本，不代表真实作品/长视频准确率。媒体默认仍待核对。原真实英文OCR集成与隐藏桌面OCR/DPAPI通过。
+- `src/storage/full-backup.js`：SQLite+media+SHA256清单、integrity_check、拒绝符号链接/越界/未知文件；restore-backup工具只新建目录，拒绝覆盖；DPAPI不能跨用户/机器解密。服务端vault需另外备份。
+- `src/broker/server.js`独立部署服务：设备bearer隔离、一次性OAuth state、AES-256-GCM令牌存储、受限官方API代理、不返回Secret/令牌。`remote.js`客户端，`broker-settings.js`DPAPI保存设备凭证，UI填HTTPS域名及凭证后重启生效；无Broker时继续本地开发官方模式。`scripts/dev/configure-broker.mjs`只生成忽略的配置且拒覆盖，未执行；Nginx示例和部署文档已写，未实际部署HTTPS。
+- Webhook按官方SHA1(secret+原始body)常量时间验签、challenge、Msg-Id去重，保存7天有限元数据；客户端事件游标持久化，事件只唤醒有界官方扫描，不直接入回复队列。本次公开事件目录未确认可用于当前场景的通用新评论事件，不能宣称权限可用或零漏读。
+- 新UI `operations.js`：账号/授权服务设置、统计、批量审核、完整备份、并发、作品积压策略、PDF/Word导入、高精度OCR。历史JSON可查看references片段。
+- 验证：75项单元；test:operations完整模拟批准发送/备份/导入/统计/账号UI，test:broker模拟设备隔离/一次性回调/服务端加密且不返令牌，test:multiwork 15秒慢模型期间扫描继续及其他作品推进；official-flow、incremental、projects、official、ui、diagnostics、media、desktop回归通过。修复official-flow/multiwork/incremental/diagnostics清理定时器捕获全局child导致误杀后续进程的测试问题。所有平台/云模型请求均为夹具。
+- 文档 `docs/功能完善与验收清单.md` 为当前完成/外部待办总表；`docs/正式授权服务部署.md` 为部署步骤。README/CHANGELOG和未来发布清单更新，服务端源码不进入客户端发布清单。本轮不打包、不推远程。同账号多设备并行回复尚无跨设备去重，建议单主设备。
+- 最终后端已在暂停/无活动任务状态下备份并重启，PID4900，健康检查0.9.0；`data/backups/CommentPilot-1792391733280.sqlite` 为最后切换前备份，前一份 `CommentPilot-1792391651678.sqlite`。running/anyMonitoring/busy均false，原1模型连接和当前4评论保留，默认1账号槽位，模型并发2；真实统计接口成功、operations.js HTTP200，官方仍未配置/授权。源代码与文档保存在本地Git，不推远程。
+
+
 ## 最新实现：0.8.0 多作品公平监听（不打包）
 
 用户要求继续上一轮的多作品、高评论量处理方案。本轮已实现同一官方账号多个作品后台运行，仍不打包、不上传远程。

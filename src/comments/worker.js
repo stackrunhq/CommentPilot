@@ -14,17 +14,21 @@ export class CommentWorker{
       if(r.status==='uncertain'&&r.submission?.account===account){const t=this.ensure(r,'verify');if(t.stage!=='verify')this.queue.advance(t,'verify');}
     }
   }
-  async process(){
+  async process(stage){
     this.synchronize();const {account,workId,sessionId}=this.scope();
+    if(stage==='generate'&&this.config().queuePolicy?.pauseGeneration)return;
     for(let n=0;n<(this.maxSteps||10)&&this.running();n++){
-      const task=this.queue.claim(account,workId,sessionId);if(!task)break;const r=this.records().find(r=>r.key===task.commentKey);
+      const task=this.queue.claim(account,workId,sessionId,{stage:stage||(this.config().queuePolicy?.pauseGeneration?'send':undefined)});if(!task)break;const r=this.records().find(r=>r.key===task.commentKey);
       if(!r||r.simulated||r.workId!==workId||r.sessionId!==sessionId||['sent','ignored_history','ignored_own'].includes(r.status)){this.queue.save({...task,status:'cancelled'});continue;}
       try{
+        const policy=this.config().queuePolicy||{};
+        if(!task.approved&&policy.maxAgeMinutes>0&&Date.now()-task.created>policy.maxAgeMinutes*60000){this.queue.save({...task,status:'review',reviewReason:'expired'});continue;}
+        if(!task.approved&&task.stage==='generate'&&policy.maxBacklog>0&&this.queue.backlog(account,workId).count>policy.maxBacklog){this.queue.save({...task,status:'review',reviewReason:'overflow'});continue;}
         if(task.stage==='generate'){
           if(r.status!=='draft')await this.draft(r);
           this.queue.advance(task,'send',this.config().autoSend?'ready':'review');
         }else{
-          if(!this.config().autoSend){this.queue.save({...task,status:'review'});continue;}
+          if(!this.config().autoSend&&!task.approved){this.queue.save({...task,status:'review'});continue;}
           await this.send(r,()=>this.running());
           if(r.status==='uncertain')this.queue.advance(task,'verify');
           else if(r.status==='sent')this.queue.save({...task,status:'done'});

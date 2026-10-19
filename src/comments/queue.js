@@ -9,8 +9,9 @@ export class CommentQueue{
   list(account,work){return this.db.prepare('SELECT data FROM comment_tasks WHERE account=? AND work_id=? ORDER BY created,id').all(account||'',work||'').map(r=>JSON.parse(r.data));}
   save(t){t.updatedAt=this.now();this.db.prepare('INSERT INTO comment_tasks VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET stage=excluded.stage,status=excluded.status,next_at=excluded.next_at,data=excluded.data').run(t.id,t.account,t.workId,t.sessionId,t.commentKey,t.stage,t.status,t.nextAt,t.created,JSON.stringify(t));return t;}
   ensure({account,workId,sessionId,commentKey,stage='generate'}){const row=this.db.prepare('SELECT data FROM comment_tasks WHERE account=? AND work_id=? AND session_id=? AND comment_key=?').get(account,workId,sessionId,commentKey);if(row)return JSON.parse(row.data);return this.save({id:randomUUID(),account,workId,sessionId,commentKey,stage,status:'ready',attempts:0,nextAt:0,created:this.now()});}
-  claim(account,work,session,{verifyOnly=false}={}){
-    const row=this.db.prepare(`SELECT data FROM comment_tasks WHERE account=? AND work_id=? AND status IN ('ready','retry_wait') AND next_at<=? AND ${verifyOnly?"stage='verify'":"stage!='verify' AND session_id=?"} ORDER BY created,id LIMIT 1`).get(...[account,work,this.now(),...(verifyOnly?[]:[session])]);if(!row)return null;
+  claim(account,work,session,{verifyOnly=false,stage}={}){
+    if(stage&&!['generate','send'].includes(stage))throw Error('Invalid task stage');
+    const row=this.db.prepare(`SELECT data FROM comment_tasks WHERE account=? AND work_id=? AND status IN ('ready','retry_wait') AND next_at<=? AND ${verifyOnly?"stage='verify'":`${stage?'stage=?':"stage!='verify'"} AND session_id=?`} ORDER BY created,id LIMIT 1`).get(...[account,work,this.now(),...(verifyOnly?[]:[...(stage?[stage]:[]),session])]);if(!row)return null;
     const t=JSON.parse(row.data);const changed=this.db.prepare("UPDATE comment_tasks SET status='running' WHERE id=? AND status IN ('ready','retry_wait')").run(t.id);if(!changed.changes)return null;t.status='running';t.attempts++;return this.save(t);
   }
   advance(t,stage,status='ready'){return this.save({...t,stage,status,attempts:0,nextAt:0,lastError:'',errorCode:''});}
