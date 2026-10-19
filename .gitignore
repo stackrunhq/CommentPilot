@@ -1,0 +1,6 @@
+node_modules/
+data/
+.env
+release/
+build/icon.ico
+build/icon.png

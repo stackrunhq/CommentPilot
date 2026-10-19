@@ -1,0 +1,71 @@
+# CommentPilot
+
+Windows 本地评论回复工作台。当前源码已切换为抖音官方 OAuth / OpenAPI 评论通道，读取新评论，调用选定的大模型生成回复，并按工作台设置自动发布或保留草稿。需要开放平台获批的应用与评论权限，原浏览器登录不能替代官方授权。接入步骤见[官方接口接入说明](docs/官方接口接入说明.md)。
+
+## 安装使用
+
+已发布的 `release/CommentPilot-Setup-0.3.0-x64.exe` 仍是旧浏览器版，本次官方接口源码尚未重新打包，不能把旧安装包当成官方接口版。免安装分发需要完整的 `win-unpacked` 目录。
+
+当前源码 0.5.0：先由管理员配置官方应用，再点击“抖音授权”“读取官方作品”，选择作品并绑定模型与知识库，启动监听。身份无需手动勾选；按实际授权权限选择评论接口。官方发布文案不能代表完整媒体内容。
+
+在“文案与素材”中可保存完整文案、导入图片/动图/视频/音频/字幕。本机 OCR、动图与视频抽帧、内嵌文本字幕提取已接入；可另选支持图片输入的视觉模型和支持音频转写接口的语音模型。所有识别结果核对后才加入当前作品的回复依据。无需等待抖音授权即可整理本地素材，详见[文案与素材识别说明](docs/文案与素材识别说明.md)。按用户要求本轮不打包。
+
+## 模型支持
+
+- DeepSeek、阿里百炼：Chat Completions。
+- 智谱 GLM：标准模型 API，基础地址预填；具体型号手动填写或从厂家模型列表选择。套餐与标准 API Key 不通用。
+- 同厂家可保存多个型号，通过“同厂家新增型号”复用已有加密 Key；跨厂家或跨地址不允许复制 Key。
+- OpenAI / 具有 API 访问权限的 Codex 模型：Responses；模型名称手动填写。
+- Ollama：本地原生 `/api/chat`。
+- 自动发现本机 Ollama 已安装模型，下拉选择后保存；自动略过已确认不支持文本生成的向量等模型。端口、协议和超时等放在高级设置。
+- LM Studio、vLLM、自定义服务：选择其支持的兼容协议。
+
+连接配置包含基础地址、模型、认证、超时和输出 token 上限。阿里云地址与 Key 须属于同一地域，可以填写控制台中的业务空间地址。不自动切换供应商。Codex 客户端/CLI 订阅登录不是此版本的认证入口。
+
+## 数据与历史
+
+新增“作品管理”和“知识库”：每作品独立保存模型、补充资料与知识库绑定；作品卡片直接查看该作品历史。知识库可输入或导入 UTF-8 txt/md，版本化入库。生成记录保留知识库版本及完整资料快照；资料变化后旧草稿需重新生成。当前一次监听一个作品，不同时运行多个作品。未绑定知识库则只依据本作品正文、已核对 OCR 和补充资料；没有资料拒绝生成。
+
+后续开发请先看 [CONTINUATION.md](CONTINUATION.md)，其中记录已验证内容、实现边界和剩余联调。
+
+SQLite 文件为数据目录中的 `commentpilot.sqlite`，无需另装数据库。保存配置、模型连接、加密 Key、作品与 OCR 版本、评论、模型调用、发送尝试和监听基线。
+
+Key 使用 Windows CurrentUser DPAPI 加密，页面不回传明文。换机器或 Windows 用户后需重新填写 Key。历史页支持跨作品筛选、详情、分页、JSON/CSV 导出；设置页可以生成一致性数据库备份。
+
+开发版使用 `data`；新安装使用 `%APPDATA%\CommentPilot`。已有旧版用户目录 `%APPDATA%\DouyinReplyWorkbench` 时沿用该目录，自动迁移 `state.json`，保留原文件及 `state.pre-commentpilot.json`。迁移幂等且使用事务；不要同时让多个服务使用同一数据目录。旧版仅存在内存中的 Key 需要在新版首次保存一次。
+
+## 监听规则
+
+默认每 10 秒检查一次，读取、生成和发送串行运行。模型或页面耗时可能超过周期。普通启动跳过已有评论；“继续上次监听”保留旧起点。作品 ID + 评论 ID 去重，自身评论排除。发送前重新定位原评论，并检查原评论内新增的回复；结果不明会暂停，不自动重发。
+
+当前仅读取正常浏览器加载的评论列表与可见评论，不保证高流量情况下完整遍历所有分页。图文 OCR 在本地执行，低置信结果需要核对采用；未转写视频语音。
+
+## 开发与验证
+
+Node.js 24.22+，Windows。Electron 打包版本自带对应运行时。
+
+```powershell
+npm ci
+npx playwright install chromium
+npm start
+```
+
+开发页面 `http://127.0.0.1:3210`，端口占用时检查已运行实例。不要直接结束含有尚未保存旧版 Key 的服务。
+
+```powershell
+npm test
+npm run test:browser
+npm run test:ui
+npm run test:projects
+npm run dist
+powershell -File scripts/smoke-release.ps1 -Executable G:\res\release\win-unpacked\CommentPilot.exe
+powershell -File scripts/test-installer.ps1
+```
+
+UI 集成测试自行启动隔离服务，使用虚构凭据和本地模拟模型，不调用真实模型或发送抖音评论。安装版冒烟检查 Chromium、OCR、SQLite 和 DPAPI。沙箱环境可能无法访问 Windows 用户加密配置，需要在正常用户进程运行凭据测试。
+
+安装器使用 Electron Builder + NSIS，未做商业数字签名。保留旧安装标识以支持品牌升级。构建采用白名单，不包含用户数据、Key、登录资料或真实历史。
+
+接口依据：[阿里百炼兼容接口](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope)、[Ollama Chat](https://docs.ollama.com/api/chat)、[OpenAI 文本生成](https://developers.openai.com/api/docs/guides/text)。
+
+新增供应商依据：[智谱快速开始](https://docs.bigmodel.cn/cn/guide/start/quick-start)、[DeepSeek 模型列表](https://api-docs.deepseek.com/api/list-models/)。

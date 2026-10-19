@@ -1,0 +1,34 @@
+{
+  "name": "commentpilot",
+  "version": "0.5.0",
+  "description": "CommentPilot 多模型评论回复工作台",
+  "author": "CommentPilot",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "start": "node server.js",
+    "desktop": "electron .",
+    "stage": "node scripts/stage-release.mjs",
+    "dist": "npm run stage && electron-builder --win --x64",
+    "test": "node --test test/*.test.js",
+    "test:ui": "node test-commentpilot.mjs",
+    "test:integration": "node test-commentpilot.mjs",
+    "test:projects": "node test-projects.mjs",
+    "test:browser": "node test-browser.js",
+    "test:media": "node test-media-ui.mjs"
+  },
+  "dependencies": {
+    "@tesseract.js-data/chi_sim": "^1.0.0",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "playwright": "^1.56.0",
+    "sharp": "^0.35.5",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "electron": "^44.8.0",
+    "electron-builder": "^26.15.3"
+  }
+}
