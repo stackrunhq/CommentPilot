@@ -26,6 +26,7 @@ import {validateConfig} from './config.js';
 import {validVideo,workId,sameWork,extractVideo} from '../works/identity.js';
 import {generateReply} from '../models/reply.js';
 import {openTarget} from '../douyin/browser/navigation.js';
+import {assertBrowserReady} from '../douyin/browser/readiness.js';
 import {readComments,uniqueComment,waitForNewReply,openComments,adaptComments,activateReply,waitForCommentData,douyinSelectors} from '../douyin/browser/comments.js';
 import {extractWorkContent,replyContext} from '../works/content.js';
 import {recognizeImages,validImageUrl} from '../media/ocr.js';
@@ -46,7 +47,7 @@ const allowedOrigins=[`http://127.0.0.1:${port}`,`http://localhost:${port}`];
 const defaults={video:'',model:'deepseek-chat',context:'',tone:'自然、友好、简短',ownName:'',interval:10,dailyLimit:20,autoSend:false,selectors:{...douyinSelectors}};
 const storage=new Storage(dir);
 const logger=new Logger(dir,{db:storage.db});storage.logger=logger;
-logger.write('process.started',{transport:process.env.APP_BROWSER_FIXTURE==='1'?'browser-fixture':'official'});
+
 const fatal=error=>{logger.write('process.failed',{errorCode:errorCode(error)},'error');console.error('程序发生未处理异常，请查看脱敏诊断记录。');process.exit(1);};
 process.on('uncaughtException',fatal);process.on('unhandledRejection',fatal);
 const brokerSettings=new BrokerSettings(storage.db);
@@ -55,8 +56,11 @@ let official=accounts.get(storage.load().config?.accountSlot||'default');
 const selectedOfficial=()=>official;
 const media=new MediaManager(storage);
 const queue=new CommentQueue(storage.db);queue.recover();
-// Browser transport is available only to isolated regression fixtures.
-const officialMode=process.env.APP_BROWSER_FIXTURE!=='1';
+// Personal browser mode is an explicit product setting, separate from regression fixtures.
+let officialMode=process.env.APP_BROWSER_FIXTURE!=='1'&&!storage.load().config?.personalBrowserEnabled;
+const transport=()=>officialMode?'official':process.env.APP_BROWSER_FIXTURE==='1'?'browser-fixture':'personal-browser';
+logger.write('process.started',{transport:transport()});
+let browserBinding=null,lastBrowserSubmission=0;
 let saved=storage.state();
 let config={...defaults,...saved.config,selectors:{...defaults.selectors,...saved.config?.selectors}};
 let records=saved.records||[], logs=[], apiKey=process.env.DEEPSEEK_API_KEY||'', browser,page,boundUrl='',diagnostics=null,modelCheck=null,running=false,busy=false,timer;
@@ -91,7 +95,7 @@ async function syncWork(){if(officialMode){
   workContents[w.id]=content;boundUrl=w.url;contentStatus='已读取官方发布文案；导入素材可补充画面和语音';await persist();return content;
 }selectWorkPage();if(!page||page.isClosed())throw Error('请先打开登录浏览器');const content=await extractWorkContent(page,config.video);const previous=currentContent();if(previous?.body===content.body)content.ocr=previous.ocr;workContents[content.id]=content;boundUrl=page.url();contentStatus='已提取作品正文';if(!config.ownName&&new URL(page.url()).pathname==='/user/self'){const info=page.locator('[data-e2e="user-info"]').filter({visible:true});if(await info.count()===1)config.ownName=(await info.innerText()).split('\n')[0].trim();}if(!previous||previous.body!==content.body||JSON.stringify(previous.imageUrls)!==JSON.stringify(content.imageUrls)){log(`已提取作品 ${content.id} 正文（${content.body.length} 字）`);await persist();}return content;}
 async function prepareComments(){
-  checkPage();await openComments(page);
+  checkPage();await assertBrowserReady(page);await openComments(page);
   const response=await waitForCommentSnapshot(commentTimes,targetId(),navigationStartedAt);
   if(response)return response.comments;
   await waitForCommentData(page);try{const comments=await readComments(page,config.selectors);if(comments.length)return comments;}catch{}
@@ -148,6 +152,9 @@ async function draft(r,cfg=config){
   finally{r.generation.finishedAt=new Date().toISOString();r.generation.durationMs=Date.now()-began;storage.attempt('model_calls',{...call,...r.generation,status:r.generation.status,response:r.generation.status==='succeeded'?r.reply:'',error:r.lastError});await persist();}
 }
 async function send(r,guard=()=>true){if(officialMode)return sendOfficial(r,guard);checkPage();if(r.status!=='draft')throw Error('只有草稿可以发送');if(!recordBelongsToWork(r,config.video,targetId()))throw Error('该评论不属于当前目标作品');if(!config.ownName)throw Error('先填写当前登录账号昵称，用于排除自己的评论');if(!r.reply.trim())throw Error('回复不能为空');
+  if(r.source==='manual-import'||r.source==='douyin-official')throw Error('浏览器只能发送本次浏览器读取的评论');
+  await assertBrowserReady(page);
+  if(config.personalBrowserEnabled&&(!browserBinding||monitors[targetId()]?.browserBinding!==browserBinding.id||browserBinding.ownName!==config.ownName))throw Error('浏览器账号确认已失效，请重新确认并建立监听起点');
   const grounding=currentGrounding();if((r.generation?.references?.contextHash&&r.generation.references.contextHash!==grounding.references.contextHash)||(!r.generation?.references&&grounding.references.knowledgeBaseId))throw Error('作品资料或知识库已变更，请重新生成后发送');
   if(!config.selectors.sent)throw Error('请先配置发送成功标记并诊断页面，再发送回复');
   const today=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});const total=records.filter(x=>x.attemptDay===today&&['sent','sending','uncertain'].includes(x.status)).length;if(total>=config.dailyLimit)throw Error('已达到每日发送上限（包含结果不明的提交）');
@@ -159,9 +166,10 @@ async function send(r,guard=()=>true){if(officialMode)return sendOfficial(r,guar
   const sentMatches=config.selectors.sent==='@exact-reply-text'?row.getByText(r.reply,{exact:true}):row.locator(config.selectors.sent).filter({hasText:r.reply});const previousCount=await sentMatches.count();
   const editor=await activateReply(page,row,config.selectors);await editor.fill(r.reply);
   const button=page.locator(config.selectors.send).filter({visible:true});if(await button.count()!==1)throw Error('无法唯一定位发送按钮，请调整选择器');
+  const delay=Math.max(0,lastBrowserSubmission+3000-Date.now());if(delay)await new Promise(resolve=>setTimeout(resolve,delay));await assertBrowserReady(page);checkPage();
   if(!guard())throw Error('任务已暂停，未提交');
   const attempt={commentKey:r.key,created:new Date().toISOString(),status:'sending',text:r.reply,workId:targetId()};attempt.id=storage.attempt('reply_attempts',attempt);r.status='sending';r.attemptDay=today;log(`正在提交回复到抖音：评论 ${r.commentId||r.key}`,{event:'send_start',commentId:r.commentId});await persist();
-  try{await button.click({timeout:5000});
+  try{lastBrowserSubmission=Date.now();await button.click({timeout:5000});
     await waitForNewReply(sentMatches,previousCount);r.status='sent';r.deliveryState='done';r.lastError='';r.sentAt=new Date().toISOString();log(`已确认回复：评论 ${r.commentId||r.key}`,{event:'send_success',commentId:r.commentId});
   }catch{r.status='uncertain';log('发送结果不明，请在抖音页面人工核实；不会自动重发');running=false;clearTimeout(timer);}
   storage.attempt('reply_attempts',{...attempt,status:r.status,finishedAt:new Date().toISOString(),sentAt:r.sentAt});await persist();
@@ -219,7 +227,7 @@ async function reconcileRecord(r,id=targetId(),client=official){
 }
 async function action(name,body){
   for(const key of ['apiKey','code','state'])registerSecret(body?.[key]);
-  if(name==='diagnostics-export'){logger.write('diagnostics.exported');return diagnosticReport(storage,logger,{version:appVersion,running:monitoring(),busy,transport:officialMode?'official':'browser-fixture',mediaActive:media.active,official:official.status(),limit:body.limit});}
+  if(name==='diagnostics-export'){logger.write('diagnostics.exported');return diagnosticReport(storage,logger,{version:appVersion,running:monitoring(),busy,transport:transport(),mediaActive:media.active,official:official.status(),limit:body.limit});}
   if(name==='diagnostics-status')return {healthy:!logger.failed,retentionDays:logger.retentionDays,maxEvents:10000,fileBytes:logger.maxBytes,fileBackups:logger.backups};
   if(name==='models-discover'){
     if(body.connectionId){const c=await storage.connection(body.connectionId);return discoverModels(c,c.key);}
@@ -242,6 +250,17 @@ async function action(name,body){
   if(monitoring())throw Error('请先暂停全部监听，再执行其他操作');
   if(busy||pipelineBusy())throw Error('正在处理，请稍后操作');
   busy=true;try{
+    if(name==='browser-personal-enable'){
+      if(typeof body.enabled!=='boolean')throw Error('模式设置无效');
+      if(browser){await browser.close();browser=null;page=null;}browserBinding=null;boundUrl='';
+      config.personalBrowserEnabled=body.enabled;config.assistantMode='personal';officialMode=!body.enabled&&process.env.APP_BROWSER_FIXTURE!=='1';await persist();return {transport:transport()};
+    }
+    if(name==='browser-personal-config'){
+      if(!config.personalBrowserEnabled)throw Error('请先启用个人浏览器模式');
+      const ownName=String(body.ownName||'').trim();if(!ownName||ownName.length>100)throw Error('请填写当前登录账号的准确昵称');
+      const next=validateConfig({...config,ownName,interval:Number(body.interval??10),dailyLimit:Number(body.dailyLimit??20),autoSend:body.autoSend===true});
+      if(next.ownName!==config.ownName)browserBinding=null;config=next;await persist();return {};
+    }
     if(name==='personal-mode'){if(!['personal','official'].includes(body.mode))throw Error('模式无效');config.assistantMode=body.mode;await persist();return {};}
     if(name==='personal-work'){
       const url=extractVideo(body.url),id=workId(url);if(!id)throw Error('请粘贴具体作品的完整链接，用于本机归档，不会自动访问抖音');
@@ -353,14 +372,15 @@ async function action(name,body){
       return {url:page.url(),title:await page.title(),text:(await page.locator('body').innerText()).slice(-14000),commentHtml:(await page.locator('[data-e2e*="comment"]').evaluateAll(els=>els.filter(e=>e.getClientRects().length).slice(0,12).map(e=>e.outerHTML.slice(0,15000)))),frames:page.frames().map(f=>f.url()),controls:await page.locator('button, [role="button"], [data-e2e]').evaluateAll(els=>els.filter(e=>e.getClientRects().length).slice(0,200).map(e=>({tag:e.tagName,role:e.getAttribute('role'),marker:e.getAttribute('data-e2e'),label:e.getAttribute('aria-label'),text:(e.innerText||'').slice(0,100)})))};
     }
     if(name==='diagnose'){const result=await diagnose();log(`诊断完成：作品 ${result.workId||'未识别'}，评论容器 ${result.counts.row}`);return result;}
-    if(name==='verify'){selectWorkPage();if(!page||page.isClosed()||!workId(page.url()))throw Error('请打开具体作品；支持 video、note 及带 modal_id 的弹窗链接');if(workId(config.video)&&!sameWork(config.video,page.url()))throw Error('浏览器中的作品与配置不一致，请先打开目标作品');boundUrl=page.url();log(`已确认作品 ${workId(boundUrl)}`);return {};}
+    if(name==='verify'){selectWorkPage();if(!page||page.isClosed()||!workId(page.url()))throw Error('请打开具体作品；支持 video、note 及带 modal_id 的弹窗链接');if(workId(config.video)&&!sameWork(config.video,page.url()))throw Error('浏览器中的作品与配置不一致，请先打开目标作品');await assertBrowserReady(page);if(config.personalBrowserEnabled){if(body.confirmed!==true||!config.ownName)throw Error('请先保存账号昵称，并确认已登录本人账号且作品属于自己');browserBinding={id:crypto.randomUUID(),ownName:config.ownName,workId:targetId()};}boundUrl=page.url();log(`已确认作品 ${workId(boundUrl)}`);return {};}
     if(name==='browser'||name==='connect'){
+      if(!targetId())throw Error('请先保存要监听的具体作品');
       if(browser&&page&&!page.isClosed()){
         await page.bringToFront();
         if(!validVideo(page.url())||(name==='connect'&&!sameWork(page.url(),config.video))){boundUrl='';const warning=await openTarget(page,config.video);log(warning||'已重新打开目标作品');}
         else log('已切回现有登录浏览器，不重复跳转作品链接');return {};
       }
-      if(!browser){browser=await chromium.launchPersistentContext(path.join(dir,'browser'),{headless:false,channel:process.env.BROWSER_CHANNEL||undefined,viewport:null});commentTimes=trackCommentTimes(browser);browser.on('close',()=>{browser=null;page=null;boundUrl='';running=false;clearTimeout(timer);});}
+      if(!browser){browserBinding=null;browser=await chromium.launchPersistentContext(path.join(dir,'browser'),{headless:false,channel:process.env.BROWSER_CHANNEL||undefined,viewport:null});commentTimes=trackCommentTimes(browser);browser.on('close',()=>{browser=null;page=null;browserBinding=null;boundUrl='';running=false;clearTimeout(timer);});}
       page=browser.pages()[0]||await browser.newPage();boundUrl='';
       const warning=await openTarget(page,config.video);
       log(warning||'浏览器已打开，请扫码登录，打开评论区并核对目标作品');return {};
@@ -374,9 +394,12 @@ async function action(name,body){
       if((await activeConnection()).auth!=='none'&&!apiKey)throw Error('请配置当前模型连接的 API Key');
       try{await syncWork();}catch(error){contentStatus=error.message;currentGrounding();}
       checkPage();currentGrounding();
+      if(!officialMode)await assertBrowserReady(page);
+      if(config.personalBrowserEnabled&&(!browserBinding||browserBinding.ownName!==config.ownName||browserBinding.workId!==targetId()))throw Error('请先确认登录账号及作品归属');
       if(officialMode){commentRouteGuard();}else if(!config.ownName.trim())throw Error('请填写登录账号昵称');
       if(name==='resume'){
         const previous=monitors[targetId()];if(officialMode&&previous?.account!==official.accountFingerprint())throw Error('请重新启动监听，不能恢复旧账号或浏览器基线');if(!previous?.sessionId||!Number.isFinite(Date.parse(previous.since)))throw Error('该作品没有可恢复的监听，请使用启动监听建立历史基线');
+        if(config.personalBrowserEnabled&&previous.browserBinding!==browserBinding.id)throw Error('浏览器已重新打开或账号重新确认，请启动新监听，不能沿用旧账号会话');
         if(!officialMode&&config.autoSend&&!config.selectors.sent)throw Error('自动发送前必须配置发送成功标记');
         log(`继续上次监听：保留起点 ${previous.since}，检查间隔 ${config.interval} 秒`);running=true;timer=setTimeout(cycle,0);return {};
       }
@@ -384,6 +407,7 @@ async function action(name,body){
       if(!officialMode&&!baseline.length&&await page.locator('[data-e2e="comment-list"]').filter({visible:true}).count()!==1)throw Error('评论区尚未加载，无法建立历史边界');
       if(!officialMode&&config.autoSend&&!config.selectors.sent)throw Error('自动发送前必须配置发送成功标记');
       monitors[targetId()]=establishBaseline(records,baseline,{video:config.video,target:targetId()});
+      if(config.personalBrowserEnabled)monitors[targetId()].browserBinding=browserBinding.id;
       if(officialMode){monitors[targetId()].account=official.accountFingerprint();queue.cancelOtherSessions(official.accountFingerprint(),targetId(),monitors[targetId()].sessionId);}logger.write('monitor.baseline',{workId:targetId(),baselineCount:baseline.length,autoSend:config.autoSend,interval:config.interval});
       await persist();log(`仅回复新评论：已记录 ${baseline.length} 条现有评论，本次启动前的评论和未发送任务不补发`);
       running=true;timer=setTimeout(cycle,config.interval*1000);return {};
@@ -396,9 +420,10 @@ async function action(name,body){
   }finally{busy=false;}
 }
 function commentRouteGuard(){const status=official.status();if(!status.route)throw Error('未获普通或企业评论权限，请重新授权已批准的权限');}
-const actionNames=new Set(["personal-mode","personal-work","personal-import","personal-generate","personal-edit","personal-copied","personal-published","broker-settings","official-refresh","queue-review-list","operations-status","queue-review","pipeline-config","backup-full","backup-verify","accounts-create","accounts-select","monitor-start","monitor-stop","monitor-status","reset-scan","queue-status","verify-pending","retry-task","diagnostics-export","diagnostics-status","models-discover","works","knowledge-list","history","history-detail","backup","media-cancel","stop","caption-save","media-delete","media-start","media-accept","media-unaccept","official-authorize","official-callback","official-disconnect","official-works","ocr","works-save","works-select","knowledge-save","knowledge-delete","runtime-test","connections-save","connections-select","connections-delete","connections-test","credentials","config","model-test","extract","ocr-accept","adapt-comments","reply-inspect","open-comments","browser-inspect","diagnose","verify","browser","connect","navigate","collect","sample","start","resume","draft","edit","send"]);
+const actionNames=new Set(["browser-personal-enable","browser-personal-config","personal-mode","personal-work","personal-import","personal-generate","personal-edit","personal-copied","personal-published","broker-settings","official-refresh","queue-review-list","operations-status","queue-review","pipeline-config","backup-full","backup-verify","accounts-create","accounts-select","monitor-start","monitor-stop","monitor-status","reset-scan","queue-status","verify-pending","retry-task","diagnostics-export","diagnostics-status","models-discover","works","knowledge-list","history","history-detail","backup","media-cancel","stop","caption-save","media-delete","media-start","media-accept","media-unaccept","official-authorize","official-callback","official-disconnect","official-works","ocr","works-save","works-select","knowledge-save","knowledge-delete","runtime-test","connections-save","connections-select","connections-delete","connections-test","credentials","config","model-test","extract","ocr-accept","adapt-comments","reply-inspect","open-comments","browser-inspect","diagnose","verify","browser","connect","navigate","collect","sample","start","resume","draft","edit","send"]);
 function requestOperation(req){if(req.method==='POST'&&req.url.startsWith('/api/media-upload?'))return 'media-upload';if(req.method==='GET'&&req.url.startsWith('/oauth/douyin/callback?'))return 'oauth-callback';if(req.method==='POST'&&req.url.startsWith('/api/')){const name=req.url.slice(5);return actionNames.has(name)?name:'unknown-action';}return null;}
 const server=http.createServer((req,res)=>traceRun(requestOperation(req)||'http',async()=>{const operation=requestOperation(req),began=Date.now();let failure,failureDetails={};res.setHeader('X-Trace-Id',traceContext().traceId);if(operation)logger.write('operation.started',{operation,workId:targetId()});try{
+  if(req.method==='GET'&&req.url==='/personal-browser.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/personal-browser.js')));}
   if(req.method==='GET'&&req.url==='/personal.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/personal.js')));}
   if(req.method==='GET'&&req.url==='/diagnostics.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/diagnostics.js')));}
   const host=req.headers.host;if(host!==`127.0.0.1:${port}`&&host!==`localhost:${port}`){res.writeHead(403);return res.end();}
@@ -425,12 +450,12 @@ const server=http.createServer((req,res)=>traceRun(requestOperation(req)||'http'
   if(req.method==='GET'&&req.url==='/management.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/management.js')));}
   if(req.method==='GET'&&req.url==='/app.css'){res.setHeader('Content-Type','text/css; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'app.css')));}
   if(req.method==='GET'&&req.url==='/projects.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/projects.js')));}
-  if(req.method==='GET'&&req.url==='/api/state'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({brokerSettings:brokerSettings.status(),accounts:accounts.list(),multiMonitors:runtimeState(),anyMonitoring:monitoring(),queueStats:queue.stats(official.accountFingerprint(),targetId()),queueTasks:queue.summaries(official.accountFingerprint(),targetId()),scanStatus:monitors[targetId()]?.scanStatus||null,scanRetry:monitors[targetId()]?.scanRetry||null,mediaAssets:media.assets(targetId()||''),mediaJob:media.latest(targetId()||''),mediaActive:media.active?{workId:media.active.job.workId,phase:media.active.job.phase}:null,transport:officialMode?'official':'browser-fixture',official:official.status(),connections:storage.connections(),providerPresets,config,records:records.filter(r=>recordBelongsToWork(r,config.video,targetId())),logs,running,busy:busy||pipelineBusy(),pipeline:{scan:scheduler.inflight.size,generate:generators.inflight.size,send:deliveries.inflight.size,modelConcurrency:generators.concurrency},keyConfigured:!!apiKey,browserOpen:!!browser,browserUrl:page&&!page.isClosed()?page.url():null,confirmedWorkId:workId(boundUrl),diagnostics,modelCheck,workContent:currentContent(),contentStatus,ocrProgress,monitor:monitors[targetId()]||null,collectStats}));}
+  if(req.method==='GET'&&req.url==='/api/state'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({brokerSettings:brokerSettings.status(),accounts:accounts.list(),multiMonitors:runtimeState(),anyMonitoring:monitoring(),queueStats:queue.stats(official.accountFingerprint(),targetId()),queueTasks:queue.summaries(official.accountFingerprint(),targetId()),scanStatus:monitors[targetId()]?.scanStatus||null,scanRetry:monitors[targetId()]?.scanRetry||null,mediaAssets:media.assets(targetId()||''),mediaJob:media.latest(targetId()||''),mediaActive:media.active?{workId:media.active.job.workId,phase:media.active.job.phase}:null,transport:transport(),official:official.status(),connections:storage.connections(),providerPresets,config,records:records.filter(r=>recordBelongsToWork(r,config.video,targetId())),logs,running,busy:busy||pipelineBusy(),pipeline:{scan:scheduler.inflight.size,generate:generators.inflight.size,send:deliveries.inflight.size,modelConcurrency:generators.concurrency},keyConfigured:!!apiKey,browserOpen:!!browser,browserUrl:page&&!page.isClosed()?page.url():null,confirmedWorkId:workId(boundUrl),diagnostics,modelCheck,workContent:currentContent(),contentStatus,ocrProgress,monitor:monitors[targetId()]||null,collectStats}));}
   if(req.method==='POST'&&req.url.startsWith('/api/')){
     if(req.headers['x-local-app']!=='douyin-reply'||(req.headers.origin&&!allowedOrigins.includes(req.headers.origin)))throw Error('非法请求来源');
     let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>2000000)throw Error('请求过大');}let body;try{body=JSON.parse(raw||'{}');}catch{throw Error('Invalid JSON request');}const result=await action(req.url.slice(5),body);res.setHeader('Content-Type','application/json');return res.end(JSON.stringify(result));}
   res.writeHead(404);res.end();
- }catch(e){failure=errorCode(e);failureDetails=errorMetadata(e);log(redactText(e.message));res.writeHead(400,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify({error:redactText(e.message),errorCode:failure,traceId:traceContext().traceId}));}finally{if(operation)logger.write('operation.finished',{operation,workId:targetId(),outcome:res.statusCode>=400?'failed':'succeeded',httpStatus:res.statusCode,autoSend:config.autoSend,interval:config.interval,transport:officialMode?'official':'browser-fixture',durationMs:Date.now()-began,...failureDetails},res.statusCode>=400?'error':'info');}}));
+ }catch(e){failure=errorCode(e);failureDetails=errorMetadata(e);log(redactText(e.message));res.writeHead(400,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify({error:redactText(e.message),errorCode:failure,traceId:traceContext().traceId}));}finally{if(operation)logger.write('operation.finished',{operation,workId:targetId(),outcome:res.statusCode>=400?'failed':'succeeded',httpStatus:res.statusCode,autoSend:config.autoSend,interval:config.interval,transport:transport(),durationMs:Date.now()-began,...failureDetails},res.statusCode>=400?'error':'info');}}));
 server.on('error',error=>{
   if(error.code==='EADDRINUSE'){
     console.error(`${port} 端口已被占用。若工作台已经运行，请直接打开 http://127.0.0.1:${port}，无需重复启动。`);

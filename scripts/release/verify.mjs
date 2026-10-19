@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 const root=path.resolve(import.meta.dirname,'../..'),release=path.join(root,'release');
 const manifest=JSON.parse(await readFile(path.join(release,'stage/release-manifest.json'),'utf8'));
 const backend=path.join(release,'win-unpacked/resources/backend');const hashes={};
-for(const file of [...manifest.sources,'src/ui/index.html','src/ui/scripts/management.js','src/ui/scripts/projects.js','src/ui/scripts/official.js','src/ui/scripts/media-ui.js','src/ui/scripts/diagnostics.js','src/ui/scripts/reliability.js','src/ui/scripts/multiwork.js','src/ui/scripts/operations.js','src/ui/scripts/personal.js','src/ui/app.css','package.json','package-lock.json']){
+for(const file of [...manifest.sources,'src/ui/index.html','src/ui/scripts/management.js','src/ui/scripts/projects.js','src/ui/scripts/official.js','src/ui/scripts/media-ui.js','src/ui/scripts/diagnostics.js','src/ui/scripts/reliability.js','src/ui/scripts/multiwork.js','src/ui/scripts/operations.js','src/ui/scripts/personal.js','src/ui/scripts/personal-browser.js','src/ui/app.css','package.json','package-lock.json']){
   const source=await readFile(path.join(root,file)),packed=await readFile(path.join(backend,file));assert.ok(source.equals(packed),'Packaged source mismatch: '+file);hashes[file]=createHash('sha256').update(source).digest('hex');
 }
 for(const name of ['data','.env','state.json','commentpilot.sqlite','browser']){let present=false;try{await access(path.join(backend,name));present=true;}catch{}assert.equal(present,false,'Private path packaged: '+name);}

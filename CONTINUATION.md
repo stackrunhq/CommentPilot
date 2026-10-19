@@ -1,3 +1,11 @@
+后端更新结果：备份 data/backups/CommentPilot-1792394947491.sqlite，PID57392，健康检查0.11.0。已启用personal-browser，监听暂停、浏览器关闭；保留4条当前评论和1个模型连接，现有autoSend=true。当前连接keyConfigured=false，必须配置有效Key或本地模型后才能真实测试。
+
+## 最新实现：0.11.0 个人浏览器自动回复（不打包）
+
+用户明确要求自动回复、不要复制粘贴。本版新增 personalBrowserEnabled 持久化开关和 personal-browser transport，不依赖 APP_BROWSER_FIXTURE。readiness.js 检查登录/验证码；personal-browser.js 提供启用、昵称/限额/自动发送、打开浏览器、本人作品确认、读取与启停。单作品运行，重新绑定必须新起点；发送核对原评论及新增回复，结果不明暂停。不能自动证明账号归属，真实页面尚未校准。
+
+验证：79项单元、test:personal、test:browser、test:official、test:personal-browser 全通过。后者显式测试预加载只在合成页面运行，验证新评论经模型生成和DOM发送、旧/本人评论跳过、验证码暂停及重启不重发，不能称真实抖音联调。详见 docs/个人浏览器自动回复说明.md。旧0.10章节是手动分支历史说明。未执行stage/dist。
+
 # CommentPilot 开发交接记录
 
 ## 最新实现：0.10.0 个人辅助回复（不打包）
