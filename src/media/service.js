@@ -8,6 +8,7 @@ import ffmpeg from 'ffmpeg-static';
 import ffprobe from 'ffprobe-static';
 import {recognizeImages} from './ocr.js';
 import {callModel} from '../models/providers.js';
+import {errorMetadata} from '../observability/logger.js';
 
 const run=promisify(execFile);
 const extensions=new Set(['.png','.jpg','.jpeg','.webp','.gif','.bmp','.tif','.tiff','.mp4','.mov','.mkv','.webm','.m4v','.mp3','.wav','.m4a','.srt','.vtt','.txt']);
@@ -35,7 +36,7 @@ export async function transcribeAudio(c,file,signal){
   const url=c.baseUrl.replace(/\/(?:chat\/completions|responses)\/?$/,'').replace(/\/$/,'')+'/audio/transcriptions';
   let res;try{res=await fetch(url,{method:'POST',redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(c.timeout*1000)]),headers:c.auth!=='none'?{Authorization:`Bearer ${c.key}`}:{},body:form});}catch{check(signal);throw Error('语音转写连接失败或超时');}
   if(!res.ok)throw Error(`语音转写 HTTP ${res.status}，请确认此模型支持音频转写接口`);
-  const data=await res.json();if(typeof data.text!=='string'||data.text.length>20000)throw Error('语音转写未返回有效 text');return data.text.trim();
+  let data;try{data=await res.json();}catch{throw Error('语音服务返回无效 JSON');}if(typeof data.text!=='string'||data.text.length>20000)throw Error('语音转写未返回有效 text');return data.text.trim();
 }
 export async function describeFrame(c,bytes,signal){
   const b64=(await sharp(bytes).resize({width:1280,height:1280,fit:'inside',withoutEnlargement:true}).jpeg({quality:85}).toBuffer()).toString('base64');
@@ -53,10 +54,10 @@ export class MediaManager{
   assets(work){return this.db.prepare('SELECT data FROM media_assets WHERE work_id=? ORDER BY rowid').all(work).map(r=>JSON.parse(r.data));}
   job(id){const r=this.db.prepare('SELECT data FROM media_jobs WHERE id=?').get(id);return r?JSON.parse(r.data):null;}
   latest(work){const r=this.db.prepare('SELECT data FROM media_jobs WHERE work_id=? ORDER BY rowid DESC LIMIT 1').get(work);return r?JSON.parse(r.data):null;}
-  saveJob(j){this.db.prepare('INSERT OR REPLACE INTO media_jobs VALUES(?,?,?)').run(j.id,j.workId,JSON.stringify(j));}
+  saveJob(j){this.db.prepare('INSERT OR REPLACE INTO media_jobs VALUES(?,?,?)').run(j.id,j.workId,JSON.stringify(j));const stage=/OCR/.test(j.phase||'')?'ocr':/转写/.test(j.phase||'')?'speech':/画面理解/.test(j.phase||'')?'vision':/音轨|抽帧/.test(j.phase||'')?'decode':'prepare';const marker=j.id+':'+j.status+':'+stage;if(this.lastMarker!==marker){this.lastMarker=marker;this.storage.logger?.write('media.stage',{workId:j.workId,mediaJobId:j.id,status:j.status,operation:'media.'+stage,outcome:j.status==='done'?'succeeded':['error','cancelled','interrupted'].includes(j.status)?'failed':'running'});}}
   async modelCall(job,c,kind,details,fn){
     const call={created:new Date().toISOString(),status:'running',kind,workId:job.workId,mediaJobId:job.id,connectionId:c.id,connectionName:c.name,provider:c.provider,model:c.model,...details};call.id=this.storage.attempt('model_calls',call);const began=Date.now();
-    try{const text=await fn();call.response=text;call.status='succeeded';return text;}catch(e){call.status='failed';call.error=e.message;throw e;}finally{call.durationMs=Date.now()-began;call.finishedAt=new Date().toISOString();this.storage.attempt('model_calls',call);}
+    try{const text=await fn();call.response=text;call.status='succeeded';return text;}catch(e){call.status='failed';call.error=e.message;Object.assign(call,errorMetadata(e));throw e;}finally{call.durationMs=Date.now()-began;call.finishedAt=new Date().toISOString();this.storage.attempt('model_calls',call);}
   }
   validateWork(work){if(!/^\d+$/.test(work||'')||!this.storage.work(work))throw Error('请先保存并选择具体作品');}
   async upload(work,name,stream){

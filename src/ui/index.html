@@ -35,7 +35,8 @@ const names={new:'待生成',generating:'模型 生成中',draft:'草稿',sent:'
 function displayedWorkId(url){try{const u=new URL(url);return u.searchParams.get('modal_id')||u.pathname.match(/^\/(?:video|note)\/(\d+)/)?.[1]||null;}catch{return null;}}
 function isCurrentWork(record){const current=displayedWorkId(state.config.video)||state.confirmedWorkId;const recordId=record.workId||displayedWorkId(record.video);return current?recordId===current:record.video===state.config.video;}
 function message(t){$('message').textContent=t;$('message').style.display='block';}
-async function post(action,body={}){const r=await fetch('/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Local-App':'douyin-reply'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(data.error);return data;}
+function apiFailure(data){const error=Error((data.error||'请求失败')+(data.traceId?'\n排查编号：'+data.traceId:''));error.traceId=data.traceId;return error;}
+async function post(action,body={}){const r=await fetch('/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Local-App':'douyin-reply'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw apiFailure(data);return data;}
 function formConfig(){if(!state)throw Error('配置尚未加载，请稍后再试');const body={apiKey:$('apiKey').value};for(const f of fields)if(dirty.has(f)||f==='video')body[f]=f==='autoSend'?$(f).checked:['interval','dailyLimit'].includes(f)?Number($(f).value):$(f).value;for(const k of Object.keys(labels))if(dirty.has('sel_'+k)){body.selectors??={};body.selectors[k]=$('sel_'+k).value;}return body;}
 async function submitCredentials(){await post('credentials',{apiKey:$('apiKey').value,model:$('model').value});$('apiKey').value='';}
 async function call(action,body={}){
@@ -75,4 +76,4 @@ $('settings').onsubmit=e=>{e.preventDefault();run(async()=>{await call('config',
 document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>run(async()=>{if(b.dataset.action==='verify'&&!confirm('我已核对浏览器中的作品是配置的目标作品，并且当前登录账号正确。'))return;const result=await call(b.dataset.action,b.dataset.action==='ocr-accept'?{text:$('ocrText').value}:{});if(b.dataset.action==='model-test')message('模型 连接成功：'+result.reply);if(b.dataset.action==='adapt-comments')message('已读取 '+result.count+' 条评论；自己的评论不会进入自动回复队列。');}));
 $('sample').onclick=()=>run(async()=>{await call('sample',{text:$('sampleText').value});$('sampleText').value='';});
 run(()=>refresh(true));setInterval(()=>run(()=>refresh()),3000);
-</script><script src="/management.js"></script><script src="/projects.js"></script><script src="/official.js"></script><script src="/media-ui.js"></script></html>
+</script><script src="/management.js"></script><script src="/projects.js"></script><script src="/official.js"></script><script src="/media-ui.js"></script><script src="/diagnostics.js"></script></html>

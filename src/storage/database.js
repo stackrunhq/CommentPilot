@@ -5,6 +5,8 @@ import {randomUUID} from 'node:crypto';
 import {protectSecret} from '../security/credentials.js';
 import {validateConnection,providerPresets} from '../models/providers.js';
 import {workId} from '../works/identity.js';
+import {redact,redactText} from '../security/redaction.js';
+import {traceContext,errorMetadata} from '../observability/logger.js';
 
 export class Storage{
   constructor(dir){
@@ -69,8 +71,8 @@ export class Storage{
   knowledge(id){const r=this.db.prepare('SELECT data FROM knowledge_bases WHERE id=?').get(id);return r?JSON.parse(r.data):null;}
   saveKnowledge(input){const id=input.id||randomUUID(),old=this.knowledge(id),name=String(input.name||'').trim(),content=String(input.content||'').trim();if(!name||!content)throw Error('请填写知识库名称和内容');if(name.length>100||content.length>30000)throw Error('名称最多100字，知识库正文最多30000字符');const data={id,name,content,version:(old?.version||0)+1,updatedAt:new Date().toISOString()};this.transaction(()=>{this.db.prepare('INSERT OR REPLACE INTO knowledge_bases VALUES(?,?)').run(id,JSON.stringify(data));this.db.prepare('INSERT INTO knowledge_versions VALUES(?,?,?)').run(id,data.version,JSON.stringify(data));});return data;}
   deleteKnowledge(id){if(this.works().some(w=>w.knowledgeBaseId===id))throw Error('该知识库已绑定作品，请先解除绑定');this.db.prepare('DELETE FROM knowledge_bases WHERE id=?').run(id);}
-  event(data){this.db.prepare('INSERT INTO events(time,data) VALUES(?,?)').run(new Date().toISOString(),JSON.stringify(data));}
-  attempt(table,data){if(!['model_calls','reply_attempts'].includes(table))throw Error('Invalid table');const id=data.id||randomUUID();this.db.prepare(`INSERT OR REPLACE INTO ${table} VALUES(?,?,?,?,?)`).run(id,data.commentKey||null,data.created||new Date().toISOString(),data.status,JSON.stringify({...data,id}));return id;}
+  event(data){this.db.prepare('INSERT INTO events(time,data) VALUES(?,?)').run(new Date().toISOString(),JSON.stringify({...redact(data),...traceContext()}));}
+  attempt(table,data){if(!['model_calls','reply_attempts'].includes(table))throw Error('Invalid table');const id=data.id||randomUUID();const record={...traceContext(),...data,id,...(data.error?{error:redactText(data.error)}:{})};this.db.prepare(`INSERT OR REPLACE INTO ${table} VALUES(?,?,?,?,?)`).run(id,data.commentKey||null,data.created||new Date().toISOString(),data.status,JSON.stringify(record));this.logger?.write(table==='model_calls'?'model.call':'reply.attempt',{...record,...(record.error?errorMetadata({message:record.error}):{}),durationMs:record.durationMs,outcome:['succeeded','sent'].includes(record.status)?'succeeded':['failed','uncertain','interrupted'].includes(record.status)?'failed':'running'});return id;}
   details(key){const read=table=>this.db.prepare(`SELECT data,status FROM ${table} WHERE comment_key=? ORDER BY created DESC`).all(key).map(x=>({...JSON.parse(x.data),status:x.status}));return {calls:read('model_calls'),attempts:read('reply_attempts')};}
   history(query={}){
     const clauses=[],args=[];for(const [field,column]of [['workId','work_id'],['status','status']])if(query[field]){clauses.push(`${column}=?`);args.push(String(query[field]));}

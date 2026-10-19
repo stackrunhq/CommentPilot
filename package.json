@@ -1,6 +1,6 @@
 {
   "name": "commentpilot",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "CommentPilot 多模型评论回复工作台",
   "author": "CommentPilot",
   "private": true,
@@ -20,7 +20,8 @@
     "test:media": "node tests/integration/media-ui.mjs",
     "test:official": "node tests/integration/official-ui.mjs",
     "test:official-flow": "node tests/integration/official-flow.mjs",
-    "test:desktop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verification/desktop.ps1"
+    "test:desktop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verification/desktop.ps1",
+    "test:diagnostics": "node tests/integration/diagnostics.mjs"
   },
   "dependencies": {
     "@tesseract.js-data/chi_sim": "^1.0.0",

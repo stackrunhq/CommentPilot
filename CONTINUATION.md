@@ -1,5 +1,19 @@
 # CommentPilot 开发交接记录
 
+## 最新实现：0.6.0 脱敏日志、操作追踪与诊断报告
+
+用户在日志审查后要求继续完成改进。已实现而非仅出方案，仍不打包。
+
+- `src/security/redaction.js`：已知凭据登记、字段与文本过滤，控制台封装；覆盖常见API Key/token、Authorization/Cookie、OAuth query、手机号/邮箱/身份证样式、本机路径。JSON解析失败不回显原始请求/响应片段。凭据保护/解密及官方令牌保存/加载/请求时登记secret。
+- `src/observability/logger.js`：AsyncLocalStorage请求追踪、每轮monitor独立traceId、每进程sessionId，固定字段JSONL，大小2MB/3份备份，SQLite diagnostic_events，30天且每100写入定期收敛10000条（批次间可略多），日志故障只标healthy=false不重发业务。文件轮转是大小策略，不声称所有原始输出均30天删除。
+- 请求开始/完成、耗时/HTTP/错误分类、评论读取与跳过统计、基线、模型调用/发送尝试和素材阶段写入。上游提供时记录数值HTTP/官方错误码，请求ID引用化。Storage.attempt业务历史增加traceId/operation；工作台消息过滤但保留本机workId以维持按作品显示。
+- `src/observability/diagnostics.js`：只导出固定字段，不读旧日志文件、不导数据库；排除评论/回复/文案/知识库/提示词/模型响应/媒体/文件名/绝对路径/凭据。每次导出独立HMAC引用代号，可在同一报告内关联；按trace分组，附状态计数和非敏感连接协议、供应商/Key存在布尔值。原始错误、完整上游requestId不在报告中。
+- API错误带traceId和errorCode，界面显示“排查编号”；设置页新增JSON下载（不是ZIP），导出500/1000/2000条，用户自行选择分享，不自动上传。新增 npm run test:diagnostics。
+- 原业务表的正文和旧事件仍保留，不追溯改写旧数据。第三方直接stdout/stderr与旧backend.log不等同于白名单报告，不纳入导出；自然语言过滤无法保证任意文本全部隐私，诊断使用排除自由文本的额外边界。升级前/已过期/未到达后端点击无法完整还原。
+- 57项单元测试通过；诊断集成测试验证隐私哨兵/非法JSON/错误编号/重启/浏览器下载/文件不含正文；test:ui、test:projects、test:media、test:official-flow、test:desktop回归通过。全部使用隔离数据与模型/平台夹具，没有发真实评论。
+- 更新未来发布白名单、前端脚本核验与package版本0.6.0，没有执行stage/dist。文档见 docs/日志与诊断说明.md，CHANGELOG已记录。
+- 已在暂停/无素材任务状态下备份 `data/backups/CommentPilot-1792378492901.sqlite`，重启PID32672；健康检查0.6.0，原1个模型连接/当前4条评论保留、监听暂停，诊断格式commentpilot-diagnostics-v1、loggingHealthy=true、privacyMode=allowlist。本轮提交保存本地Git，可通过日志查看；不向远程推送。
+
 ## 最新整理：源码按功能分层，本地 Git 回溯
 
 用户要求整理根目录源码、按功能归档，并将代码和修改记录保存在本机，便于继续开发和回溯；继续遵守先完善功能、不打包。
