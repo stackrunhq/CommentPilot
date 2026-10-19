@@ -9,6 +9,6 @@ data/
 *.log
 *.key
 *.pem
-release/
+/release/
 build/icon.ico
 build/icon.png
