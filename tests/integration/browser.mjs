@@ -1,0 +1,32 @@
+import {chromium} from 'playwright';
+import assert from 'node:assert/strict';
+import {readComments,uniqueComment,waitForNewReply,activateReply,adaptComments,waitForCommentData} from '../../src/douyin/browser/comments.js';
+import {extractWorkContent} from '../../src/works/content.js';
+const browser=await chromium.launch({headless:true});
+try{
+ const page=await browser.newPage();
+ await page.setContent(`<div class="row"><b class="author">访客</b><p class="text">怎么补偿？</p><button class="reply">回复</button><div class="replies"><p>已有回复</p></div></div><div class="row" hidden><b class="author">隐藏</b><p class="text">不应读取</p></div><textarea id="editor"></textarea><button id="send">发送</button><script>document.querySelector('#send').onclick=()=>{const p=document.createElement('p');p.textContent=document.querySelector('#editor').value;document.querySelector('.replies').append(p);};</script>`);
+ const selectors={row:'.row',author:'.author',text:'.text'};
+ assert.deepEqual(await readComments(page,selectors),[{author:'访客',text:'怎么补偿？',publishedLabel:'回复'}]);
+ const row=await uniqueComment(page,selectors,{author:'访客',text:'怎么补偿？'});
+ const replies=row.locator('.replies p').filter({hasText:'测试回复'});
+ const before=await replies.count();await page.locator('#editor').fill('测试回复');await page.locator('#send').click();await waitForNewReply(replies,before,1000);
+ await assert.rejects(()=>waitForNewReply(replies,1,100),/未检测到新增/);
+ await page.locator('.row').first().evaluate(e=>e.after(e.cloneNode(true)));
+ await assert.rejects(()=>uniqueComment(page,selectors,{author:'访客',text:'怎么补偿？'}),/同名同文/);
+ await page.setContent(`<div data-e2e="feed-active-video"><button data-e2e="feed-comment-icon" onclick="document.querySelector('#panel').hidden=false">评论</button></div><div id="panel" data-e2e="comment-list" hidden><div><div data-e2e="comment-item"><div class="comment-item-info-wrap"><span data-click-from="title">访客</span></div><div>测试评论</div><i id="tooltip_12345"></i><button onclick="setTimeout(()=>{document.querySelector('#editorMount').innerHTML='<div contenteditable=true></div>'},50)">回复</button></div></div></div><div id="editorMount"></div>`);
+ const adapted=await adaptComments(page,{});assert.equal(adapted.comments[0].text,'测试评论');assert.equal(adapted.comments[0].commentId,'12345');
+ const realEditor=await activateReply(page,page.locator(adapted.selectors.row).first(),adapted.selectors);await realEditor.fill('草稿测试');assert.equal(await realEditor.innerText(),'草稿测试');
+ await page.setContent('<div>全部评论(1)</div><div data-e2e="comment-list"></div><script>setTimeout(()=>document.querySelector("[data-e2e=comment-list]").innerHTML="<div data-e2e=comment-item>延迟加载的评论</div>",150)</script>');
+ await waitForCommentData(page);assert.equal(await page.locator('[data-e2e="comment-item"]').count(),1);
+ await page.setContent('<div>全部评论(0)</div><div data-e2e="comment-list">暂时没有更多评论</div>');await waitForCommentData(page);
+ await page.route('https://www.douyin.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<script type="application/json">{"detail":{"aweme_id":"123","desc":"真实作品正文"}}</script>'}));
+ await page.goto('https://www.douyin.com/user/self?modal_id=123');
+ assert.equal((await extractWorkContent(page,'https://www.douyin.com/note/123')).body,'真实作品正文');
+ await assert.rejects(()=>extractWorkContent(page,'https://www.douyin.com/note/456'),/不一致/);
+ await page.setContent('<div data-e2e="video-desc">可见作品描述</div><div hidden data-e2e="video-desc">隐藏旧作品</div>');
+ assert.equal((await extractWorkContent(page,'https://www.douyin.com/note/123')).body,'可见作品描述');
+ await page.setContent('<p>主页正文及评论不能当作作品正文</p>');
+ await assert.rejects(()=>extractWorkContent(page,'https://www.douyin.com/note/123'),/尚未找到作品正文/);
+ console.log('浏览器本地夹具验证通过：读取、隐藏评论过滤、输入发布、只确认新增回复、拒绝歧义评论。');
+}finally{await browser.close();}

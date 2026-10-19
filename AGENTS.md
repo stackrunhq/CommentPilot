@@ -1,6 +1,8 @@
 # CommentPilot 项目约定
 
 - 继续开发前先阅读 `CONTINUATION.md`，以其中已验证的结果和当前实现边界为起点，避免重复工作。
+- 源码按 `docs/architecture/目录与模块说明.md` 的功能目录组织，新源码不得随意放回根目录。模块迁移映射见 `docs/architecture/source-migration.json`。
+- 修改功能后同时维护 `CHANGELOG.md` 与 `CONTINUATION.md`，验证后使用本地 Git 记录；不得将用户数据或凭据纳入版本记录。当前用户要求先完善功能，不打包。
 - 用户已授权常规实现、修复、测试、打包与必要的服务更新，不逐项要求确认。后端更新前核对监听状态并保全数据。
 - 开发数据在 `data`，安装版数据在用户 AppData；凭据使用 Windows DPAPI。不得打印 Key、Cookie 或将用户数据加入安装包。
 - 验证优先用隔离数据库、模拟供应商和本地浏览器夹具；真实评论发送遵循工作台中的用户设置。

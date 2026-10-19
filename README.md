@@ -1,5 +1,7 @@
 # CommentPilot
 
+源码按功能集中在 `src/`，测试在 `tests/`，运维脚本在 `scripts/`。目录导航与本地 Git 回溯方法见[目录与模块说明](docs/architecture/目录与模块说明.md)，功能变更见 [CHANGELOG.md](CHANGELOG.md)，续接状态见 [CONTINUATION.md](CONTINUATION.md)。
+
 Windows 本地评论回复工作台。当前源码已切换为抖音官方 OAuth / OpenAPI 评论通道，读取新评论，调用选定的大模型生成回复，并按工作台设置自动发布或保留草稿。需要开放平台获批的应用与评论权限，原浏览器登录不能替代官方授权。接入步骤见[官方接口接入说明](docs/官方接口接入说明.md)。
 
 ## 安装使用
@@ -38,7 +40,7 @@ Key 使用 Windows CurrentUser DPAPI 加密，页面不回传明文。换机器�
 
 默认每 10 秒检查一次，读取、生成和发送串行运行。模型或页面耗时可能超过周期。普通启动跳过已有评论；“继续上次监听”保留旧起点。作品 ID + 评论 ID 去重，自身评论排除。发送前重新定位原评论，并检查原评论内新增的回复；结果不明会暂停，不自动重发。
 
-当前仅读取正常浏览器加载的评论列表与可见评论，不保证高流量情况下完整遍历所有分页。图文 OCR 在本地执行，低置信结果需要核对采用；未转写视频语音。
+当前默认通过官方接口分页读取评论，超过单轮分页上限会停止；高流量增量扫描仍待完善。本地素材识别结果需要核对采用，视频语音转写需选择兼容的语音模型连接。
 
 ## 开发与验证
 
@@ -57,12 +59,16 @@ npm test
 npm run test:browser
 npm run test:ui
 npm run test:projects
-npm run dist
-powershell -File scripts/smoke-release.ps1 -Executable G:\res\release\win-unpacked\CommentPilot.exe
-powershell -File scripts/test-installer.ps1
+npm run test:media
+npm run test:official
+npm run test:official-flow
+npm run test:desktop
+npm run restart
 ```
 
-UI 集成测试自行启动隔离服务，使用虚构凭据和本地模拟模型，不调用真实模型或发送抖音评论。安装版冒烟检查 Chromium、OCR、SQLite 和 DPAPI。沙箱环境可能无法访问 Windows 用户加密配置，需要在正常用户进程运行凭据测试。
+根据当前要求先完善功能，不执行打包。后续准备发布时使用 `npm run dist`；安装版核验脚本在 `scripts/release/`。
+
+UI 集成测试自行启动隔离服务，使用虚构凭据和本地模拟模型，不调用真实模型或发送抖音评论。桌面冒烟检查官方模式、OCR、SQLite 和 DPAPI；浏览器功能使用独立夹具验证。沙箱环境可能无法访问 Windows 用户加密配置，需要在正常用户进程运行凭据测试。
 
 安装器使用 Electron Builder + NSIS，未做商业数字签名。保留旧安装标识以支持品牌升级。构建采用白名单，不包含用户数据、Key、登录资料或真实历史。
 

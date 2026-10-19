@@ -1,5 +1,21 @@
 # CommentPilot 开发交接记录
 
+## 最新整理：源码按功能分层，本地 Git 回溯
+
+用户要求整理根目录源码、按功能归档，并将代码和修改记录保存在本机，便于继续开发和回溯；继续遵守先完善功能、不打包。
+
+- 已建立本地 Git 仓库，整理前基线提交 `73ab74a`，标签 `source-layout-before`；整理后检查点使用标签 `source-layout-after`。没有远程仓库，不上传。当前 PATH 的 git 命中失效的 depot_tools/git.bat，使用 `C:\Program Files\Git\bin\git.exe`。
+- 51个源码/配置/测试文件迁移；原 `lib.js` 拆为 `src/works/identity.js`、`src/comments/identity.js`、`src/app/config.js`、`src/models/reply.js`。业务源码位于 src/app/comments/works/knowledge/models/storage/security/douyin/media/desktop/ui。不是只创建空目录，根目录旧源码已迁出。
+- 测试集中 tests/unit、tests/integration、tests/fixtures；运维脚本位于 scripts/dev、scripts/verification、scripts/release；Electron Builder 配置在 config/。根目录保留 README、CHANGELOG、CONTINUATION、AGENTS 和 npm 配置等入口文档。
+- 新 `src/app/paths.js` 统一根路径，运行数据仍在 G:\res\data，不迁移数据库或媒体。更新全部导入、静态服务路径、Electron入口、npm脚本、PowerShell根路径和未来发布白名单。npm start/desktop/test 等保留，新增 npm run restart、test:official、test:official-flow、test:desktop。
+- 目录说明 `docs/architecture/目录与模块说明.md`，逐文件映射 `docs/architecture/source-migration.json`，功能变更 `CHANGELOG.md`；历史验收文档和本记录下方旧路径作为历史保留，不应再按旧路径执行。
+- .gitignore 排除 data、依赖、release、环境密钥、数据库、日志等；.gitattributes 规范文本行尾。只提交本地源码/测试/配置/文档。
+- 验证：53项单元测试、workbench/projects/media/official-ui/browser 全部集成通过；official-flow 完整模拟通过；隐藏 Electron 源码冒烟通过（官方模式、OCR、SQLite、DPAPI），没有访问用户账号或发评论。修正旧桌面冒烟错误要求官方模式也启动浏览器的断言。未执行 stage/dist 或安装包测试。
+
+后端更新前已核对暂停且无素材任务，备份 `data/backups/CommentPilot-1792376377336.sqlite`；通过新命令 `npm run restart` 重启成功，PID 24872，入口 `src/app/server.js`，健康检查0.5.0、official模式、监听暂停，原1个模型连接和当前4条评论保留，页面与素材脚本HTTP200。整理后 Git 标签为 `source-layout-after`，具体提交可 `git log --oneline --decorate` 查询。没有执行打包。
+
+功能待办保持下方0.5.0记录中的真实素材模型联调、官方资格与生产代理等，不把本次目录整理当成功能联调完成。
+
 ## 最新实现：0.5.0 文案与素材识别（本轮不打包）
 
 用户要求完善作品文案及图片、动图、长视频识别，并明确先不要打包。已实现本地素材解析链路；**没有运行 stage/dist，没有生成新 EXE**。

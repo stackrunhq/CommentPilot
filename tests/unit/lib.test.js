@@ -1,0 +1,14 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {commentKey} from '../../src/comments/identity.js';
+import {validVideo,workId,sameWork,extractVideo} from '../../src/works/identity.js';
+import {validateConfig} from '../../src/app/config.js';
+import {generateReply} from '../../src/models/reply.js';
+test('弹窗及独立作品链接识别同一作品，保持长整数精度',()=>{const id='7697085629427793785';const modal=`https://www.douyin.com/user/self?from_tab_name=main&modal_id=${id}`;assert.equal(workId(modal),id);assert.ok(sameWork(modal,`https://www.douyin.com/note/${id}`));assert.ok(sameWork(modal,`https://www.douyin.com/video/${id}`));assert.equal(sameWork(modal,'https://www.douyin.com/note/123'),false);for(const u of ['https://www.douyin.com/jingxuan','https://www.douyin.com/user/self?modal_id=no','https://evil.test/video/123'])assert.equal(workId(u),null);});
+test('从分享文案提取链接',()=>{assert.equal(extractVideo('复制打开抖音 https://v.douyin.com/abc/ 11/13'),'https://v.douyin.com/abc/');});
+test('只接受 HTTPS 抖音链接，拒绝相似域名',()=>{assert.ok(validVideo('https://v.douyin.com/abc/'));for(const u of ['http://douyin.com','https://douyin.com.evil.test','file:///a','javascript:alert(1)'])assert.equal(validVideo(u),false);});
+test('去重包含作品、作者和正文',()=>{assert.equal(commentKey('a','b','c'),commentKey('a','b','c'));assert.notEqual(commentKey('a','b','c'),commentKey('a','d','c'));assert.notEqual(commentKey('a','b','c'),commentKey('d','b','c'));});
+test('支持10秒检查，拒绝小于10秒和无效发送上限',()=>{const c={video:'https://douyin.com/video/123',interval:10,dailyLimit:20,model:'deepseek-chat',selectors:{row:'a',author:'b',text:'c'}};assert.equal(validateConfig(c),c);assert.throws(()=>validateConfig({...c,interval:9}));assert.throws(()=>validateConfig({...c,dailyLimit:0}));});
+test('无密钥时不请求模型',async()=>{await assert.rejects(()=>generateReply({},'',{}),/API Key/);});
+test('DeepSeek 请求隔离规则和用户评论，提取回复',async()=>{const previous=globalThis.fetch;let request;globalThis.fetch=async(url,options)=>{request={url,options};return {ok:true,json:async()=>({choices:[{message:{content:' 谢谢你的支持！ '}}]})};};try{assert.equal(await generateReply({model:'example',tone:'友好',context:'测试资料'},'test-key',{author:'访客',text:'你好'}),'谢谢你的支持！');assert.equal(request.url,'https://api.deepseek.com/chat/completions');const body=JSON.parse(request.options.body);assert.equal(body.messages[1].role,'user');assert.equal(JSON.parse(body.messages[1].content).comment,'你好');}finally{globalThis.fetch=previous;}});
+test('模型错误不成为可发送内容',async()=>{const previous=globalThis.fetch;globalThis.fetch=async()=>({ok:false,status:429});try{await assert.rejects(()=>generateReply({model:'x'},'test',{}),/429/);}finally{globalThis.fetch=previous;}});
