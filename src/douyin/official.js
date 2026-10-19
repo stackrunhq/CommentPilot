@@ -2,6 +2,7 @@ import {randomBytes,createHash} from 'node:crypto';
 import {protectSecret} from '../security/credentials.js';
 import {workId} from '../works/identity.js';
 import {registerSecret} from '../security/redaction.js';
+import {scanComments} from '../comments/scanner.js';
 
 const origin='https://open.douyin.com';
 export function officialWorkUrl(value){
@@ -42,10 +43,10 @@ export class DouyinOfficial{
     return {url:url.href};
   }
   async raw(endpoint,{params={},body,form=false,token}={}){
-    if(Date.now()<this.cooldown)throw Error('抖音接口处于限流冷却期，请稍后继续');
+    if(Date.now()<this.cooldown)throw Object.assign(Error('抖音接口处于限流冷却期，请稍后继续'),{retryAt:this.cooldown,upstreamStatus:429});
     const url=new URL(endpoint,origin);for(const [k,v]of Object.entries(params))url.searchParams.set(k,String(v));
     let response;try{response=await this.fetcher(url,{method:body?'POST':'GET',redirect:'error',signal:AbortSignal.timeout(30000),headers:{...(token?{'access-token':token}:{}),...(body?{'Content-Type':form?'application/x-www-form-urlencoded':'application/json'}:{})},...(body?{body:form?new URLSearchParams(body):JSON.stringify(body)}:{})});}catch{throw Error('抖音官方接口连接失败或超时；提交类请求不会自动重试');}
-    if(response.status===429){this.cooldown=Date.now()+Math.max(60,Math.min(3600,Number(response.headers.get('retry-after'))||60))*1000;throw Error('抖音接口限流，已停止请求并进入冷却期');}
+    if(response.status===429){this.cooldown=Date.now()+Math.max(60,Math.min(3600,Number(response.headers.get('retry-after'))||60))*1000;throw Object.assign(Error('抖音接口限流，已停止请求并进入冷却期'),{retryAt:this.cooldown,upstreamStatus:429});}
     if(!response.ok)throw Object.assign(Error(`抖音官方接口 HTTP ${response.status}`),{upstreamStatus:response.status});
     let json;try{json=await response.json();}catch{throw Error('抖音官方接口返回无效 JSON');}
     const data=json.data;if(!data||typeof data!=='object')throw Error('抖音官方响应缺少 data');
@@ -90,10 +91,15 @@ export class DouyinOfficial{
   }
   async work(id){await this.ready();const row=this.db.prepare('SELECT payload FROM douyin_official_works WHERE account=? AND work_id=?').get(this.token.open_id,id);if(!row)throw Error('请先读取官方作品列表并选择已授权账号的作品；网页数字 ID 不能代替官方 item_id');return JSON.parse(row.payload);}
   async comments(id){const w=await this.work(id),route=commentRoute(this.token.scope);const rows=await this.paginate(`/${route}/comment/list/`,{item_id:w.itemId,sort_type:'time'});return rows.map(c=>officialComment(c,this.token.open_id));}
-  async reply(id,comment,text){
+  async commentPage(id,cursor=0){const w=await this.work(id),route=commentRoute(this.token.scope);return this.request(`/${route}/comment/list/`,{params:{item_id:w.itemId,sort_type:'time',cursor,count:20}});}
+  async preview(id){const page=await this.commentPage(id);if(!Array.isArray(page.list))throw Error('官方评论分页格式异常');return page.list.map(c=>officialComment(c,this.token.open_id));}
+  async scan(id,checkpoint){const result=await scanComments(cursor=>this.commentPage(id,cursor),checkpoint);return {...result,comments:result.comments.map(c=>officialComment(c,this.token.open_id))};}
+  async replies(id,commentId){const w=await this.work(id),route=commentRoute(this.token.scope);return this.paginate(`/${route}/comment/reply/list/`,{item_id:w.itemId,comment_id:commentId,sort_type:'time'});}
+  async reply(id,comment,text,{guard=()=>true}={}){
     const w=await this.work(id),route=commentRoute(this.token.scope);
     if(comment.source!=='douyin-official'||!comment.commentId)throw Error('只能通过官方通道回复官方读取的评论，请重新建立监听');
-    const result=await this.request(`/${route}/comment/reply/`,{body:{item_id:w.itemId,comment_id:comment.commentId,content:text}});
+    await this.ready();if(!guard())throw Object.assign(Error('已暂停，未提交回复'),{code:'NOT_SUBMITTED'});
+    const result=await this.raw(`/${route}/comment/reply/`,{params:{open_id:this.token.open_id},token:this.token.access_token,body:{item_id:w.itemId,comment_id:comment.commentId,content:text}});
     if(!result.comment_id)throw Error('官方未返回回复 ID，结果不明，请人工核实');
     return String(result.comment_id);
   }

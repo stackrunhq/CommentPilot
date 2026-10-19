@@ -1,5 +1,16 @@
 # CommentPilot 开发交接记录
 
+## 最新实现：0.7.0 持久队列、分批扫描、发送只读核验
+
+用户要求执行上一轮建议的下一步，本轮已实现三项，继续不打包。
+
+- `src/comments/queue.js` / worker.js / scanner.js / reconciliation.js：SQLite comment_tasks按账号/作品/会话/评论唯一，阶段generate/send/verify；保存尝试次数/nextAt，分类退避，尊重429冷却；生成最多3次尝试，发送前读取失败可重试，POST结果不明绝不重发。重启恢复生成，发送阶段先review或verify；新启动取消旧会话未发送任务，继续监听保留任务和起点。当前一作品单后端进程。
+- 官方初始仅preview首页20条，避免全量历史基线阻塞；按since保守跳过后续历史。每轮最多3页（首页＋续扫），检查点与采集记录一起persist；不根据旧/置顶时间提前截止，不保证动态分页/持续高流量零漏读。旧于起点的尾页历史不全量落入评论记录。扫描暂时错误持久退避、连续5次暂停；reset-scan保留since与任务。
+- 官方发送前先读取原评论回复ID、落盘submission（账号指纹、作品、评论、文本、时间、beforeIds、attemptId）。正常返回ID标记sent；异常保留uncertain暂停发送并建立verify。每10秒只处理到期核验任务；可暂停状态手动核验。严格匹配当前作者/正文/时间/新增ID，唯一匹配才确认并更新原attempt，不匹配最多自动3次后review。0.6旧uncertain缺snapshot不可自动确认。不能证明哪个客户端创建，只证明匹配回复存在。
+- `src/ui/scripts/reliability.js`：工作台扫描与队列状态、只读核验、保留起点重置扫描、生成阻塞后重新安排。草稿review不因切换autosend自动补发。诊断报告增taskStates；新增test:incremental命令，未来发布清单更新但未执行stage/dist。
+- 测试65项单元通过；test:incremental真实隔离进程模拟1200历史、首轮1页、每轮3页、重启游标续扫/首页复查、无历史入队和重置不改since；test:official-flow模拟超时后核验、原历史更新/重启保留，发送次数不增加；test:ui/projects/diagnostics/media/official/desktop回归通过。新增feature均未用真实平台或云模型联调，不宣称真实权限已通过。
+- 文档 docs/监听队列与发送核验说明.md、CHANGELOG、README、架构/官方说明更新。已在暂停/无素材任务状态下备份 `data/backups/CommentPilot-1792382013233.sqlite`，重启PID29860；健康检查0.7.0、监听暂停，原1个模型连接/当前4条评论保留，队列可用且为空、新界面脚本HTTP200。变更保存在本地Git，不推送远程、不打包。真实应用权限、生产OAuth代理、媒体真实准确性和多作品同时监听等仍待后续。
+
 ## 最新实现：0.6.0 脱敏日志、操作追踪与诊断报告
 
 用户在日志审查后要求继续完成改进。已实现而非仅出方案，仍不打包。

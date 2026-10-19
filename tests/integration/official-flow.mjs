@@ -20,5 +20,11 @@ try{
   await until(s=>s.records.some(r=>r.commentId==='@new'&&r.status==='sent'));await post('stop');assert.equal((await readFile(sends,'utf8')).trim().split('\n').length,1);
   await stop();await start();assert.equal((await state()).official.authorized,true);await post('resume');await until(s=>!s.busy);await new Promise(r=>setTimeout(r,500));await post('stop');assert.equal((await readFile(sends,'utf8')).trim().split('\n').length,1);
   const uncertain={comment_id:'@uncertain',comment_user_id:'fan',content:'超时评论',create_time:Math.ceil(Date.now()/1000)+1};await writeFile(control,JSON.stringify({comments:[old,fresh,uncertain],failSend:true}));await post('resume');const failed=await until(s=>s.records.some(r=>r.commentId==='@uncertain'&&r.status==='uncertain'));assert.equal(failed.running,false);
-  assert.equal((await readFile(sends,'utf8')).trim().split('\n').length,2);console.log('Official isolated full flow passed: OAuth/DPAPI, works, baseline, model generation, reply, restart dedup, uncertain-send pause. No real Douyin/model requests.');
+  assert.equal((await readFile(sends,'utf8')).trim().split('\n').length,2);
+  const pending=failed.records.find(r=>r.commentId==='@uncertain');assert.ok(pending.submission);assert.ok(failed.queueTasks.some(t=>t.commentKey===pending.key&&t.stage==='verify'));
+  await writeFile(control,JSON.stringify({comments:[old,fresh,uncertain],failSend:true,replies:[{comment_id:'@confirmed-after-timeout',comment_user_id:'fixture-owner',content:pending.submission.text,create_time:Math.floor(Date.now()/1000)}]}));
+  await post('verify-pending');const reconciled=await until(s=>s.records.some(r=>r.commentId==='@uncertain'&&r.status==='sent'));assert.equal(reconciled.running,false);assert.equal((await readFile(sends,'utf8')).trim().split('\n').length,2,'verification never resends');
+  const detail=await post('history-detail',{key:pending.key});assert.ok(detail.attempts.some(a=>a.verification==='official-reply-list'&&a.status==='sent'));
+  await stop();await start();assert.ok((await state()).records.some(r=>r.key===pending.key&&r.status==='sent'));assert.equal((await readFile(sends,'utf8')).trim().split('\n').length,2);
+  console.log('Official isolated full flow passed: OAuth/DPAPI, works, baseline, queue generation/reply, restart dedup, timeout pause, read-only reconciliation and persisted confirmation. No real Douyin/model requests.');
 }finally{await stop();await rm(dir,{recursive:true,force:true});}

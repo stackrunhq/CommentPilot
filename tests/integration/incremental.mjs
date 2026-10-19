@@ -1,0 +1,19 @@
+import {fork} from 'node:child_process';
+import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+const dir=await mkdtemp(path.join(tmpdir(),'commentpilot-incremental-')),base='http://127.0.0.1:3282',control=path.join(dir,'fixture.json'),calls=path.join(dir,'pages.log');let child;
+const post=async(action,body={})=>{const r=await fetch(base+'/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','x-local-app':'douyin-reply'},body:JSON.stringify(body)}),d=await r.json();assert.ok(r.ok,d.error);return d;};
+async function start(){child=fork('src/app/server.js',[],{execArgv:['--import',new URL('../fixtures/official-fetch.mjs',import.meta.url).href],env:{...process.env,APP_PORT:'3282',APP_DATA_DIR:dir,APP_BROWSER_FIXTURE:'',DEEPSEEK_API_KEY:'',DOUYIN_CLIENT_KEY:'fixture-client',DOUYIN_CLIENT_SECRET:'fixture-secret',DOUYIN_REDIRECT_URI:'https://fixture.example/callback',OFFICIAL_FIXTURE_STATE:control,OFFICIAL_FIXTURE_SENDS:path.join(dir,'sends.log'),OFFICIAL_FIXTURE_PAGES:calls},silent:true});let errors='';child.stderr.on('data',b=>errors+=b);for(let n=0;n<100;n++){try{if((await fetch(base+'/api/health')).ok)return;}catch{}if(child.exitCode!==null)throw Error(errors);await new Promise(r=>setTimeout(r,100));}throw Error('startup timeout');}
+async function stop(){if(!child||child.exitCode!==null)return;await new Promise(resolve=>{child.once('exit',resolve);child.send({type:'shutdown'});setTimeout(()=>child.kill(),5000).unref();});}
+const state=async()=> (await fetch(base+'/api/state')).json();
+async function until(fn){for(let n=0;n<180;n++){const s=await state();if(fn(s))return s;await new Promise(r=>setTimeout(r,100));}throw Error('condition timeout');}
+try{
+  const pages={};for(let n=0;n<60;n++)pages[n]={list:Array.from({length:20},(_,j)=>({comment_id:'@old-'+n+'-'+j,comment_user_id:'fan',content:'历史',create_time:1})),has_more:n<59,cursor:n+1};await writeFile(control,JSON.stringify({pages}));await writeFile(calls,'');await start();
+  const url=new URL((await post('official-authorize')).url);await post('official-callback',{code:'fixture',state:url.searchParams.get('state')});await post('official-works');await post('works-save',{url:'https://douyin.com/video/123',context:'已确认资料'});await post('works-select',{id:'123'});await post('connections-save',{provider:'custom',name:'fixture',baseUrl:'http://127.0.0.1:19999/v1',auth:'none',protocol:'chat',model:'fixture',makeDefault:true});await post('config',{video:'https://douyin.com/video/123',interval:10,autoSend:false});await post('start');
+  assert.equal((await readFile(calls,'utf8')).trim(),'0','baseline reads only first page of 1200 historic comments');
+  let current=await until(s=>s.monitor?.scan?.cursor===3);await post('stop');assert.equal(current.scanStatus.pagesRead,3);assert.equal(current.records.length,20,'historical tail is not copied into reply queue');
+  await stop();await start();assert.equal((await state()).monitor.scan.cursor,3);await writeFile(calls,'');await post('resume');current=await until(s=>s.monitor?.scan?.cursor===5);await post('stop');assert.deepEqual((await readFile(calls,'utf8')).trim().split('\n'),['0','3','4']);assert.equal(current.records.length,20);
+  const since=current.monitor.since;await post('reset-scan');assert.equal((await state()).monitor.since,since);assert.equal((await state()).monitor.scan,null);console.log('Incremental scan passed: 1200 historical comments, one-page baseline, 3-page rounds, persisted cursor/head replay after restart, no history jobs, reset preserves cutoff.');
+}finally{await stop();await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});}
