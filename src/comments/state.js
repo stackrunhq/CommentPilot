@@ -47,6 +47,7 @@ export function ingestComments(records,comments,{video,target,ownName,session,no
       else if(range.earliest<since){status='pending_time';reason='发布时间跨越启动边界，等待进一步确认';stats.unverified++;}
       else{status='new';reason='本次监听启动后发布的新评论';stats.added++;}
     }
+    if(status==='new'&&comment.conversationBlocked){status='ignored_conversation';reason=comment.conversationReason;stats.added--;stats.unverified++;}
     if(record){Object.assign(record,{publishedLabel:comment.publishedLabel,publishedAt:comment.publishedAt,status,reason,sessionId:session?.sessionId});}
     else append(records,comment,video,target,status,reason,session?.sessionId,now);
   }

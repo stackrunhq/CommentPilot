@@ -1,3 +1,5 @@
+import {conversationLimit,followups,threadCount} from '../comments/conversation.js';
+import {expandConversations} from '../douyin/browser/comments.js';
 import {Storage} from '../storage/database.js';
 import {CommentQueue,retryable,retryDelay} from '../comments/queue.js';
 import {WorkScheduler} from '../comments/scheduler.js';
@@ -135,7 +137,11 @@ async function snapshot(){
     const comments=result.comments.filter(c=>!Number.isFinite(Date.parse(c.publishedAt))||Date.parse(c.publishedAt)>=since);
     pendingScan={result,sessionId:session.sessionId,historySkipped:result.comments.length-comments.length};return comments;
   }
-  return (await prepareComments()).map(c=>({...c,key:identity(c,targetId()),publishedAt:commentTimes.get(`${targetId()}:${c.commentId}`)}));
+  const top=(await prepareComments()).map(c=>({...c,key:identity(c,targetId()),publishedAt:commentTimes.get(`${targetId()}:${c.commentId}`)}));
+  await expandConversations(page,records,targetId());
+  await page.waitForTimeout(300);
+  const replies=[...(commentTimes.threads?.values()||[])].filter(t=>t.target===targetId()&&t.receivedAt>=navigationStartedAt).flatMap(t=>t.comments);
+  return [...top,...followups(replies,records,{workId:targetId(),ownName:config.ownName,maxRounds:conversationLimit(config.maxReplyRounds??3)})];
 }
 async function collect(){const list=await snapshot();collectStats=ingestComments(records,list,{video:config.video,target:targetId(),ownName:config.ownName,session:running?monitors[targetId()]:null});
   if(pendingScan&&monitors[targetId()]?.sessionId===pendingScan.sessionId){monitors[targetId()].scan=pendingScan.result.checkpoint;monitors[targetId()].scanStatus={pagesRead:pendingScan.result.pages,complete:pendingScan.result.complete,historySkipped:pendingScan.historySkipped};collectStats.history+=pendingScan.historySkipped;collectStats.visible+=pendingScan.historySkipped;}
@@ -155,6 +161,7 @@ async function send(r,guard=()=>true){if(officialMode)return sendOfficial(r,guar
   if(r.source==='manual-import'||r.source==='douyin-official')throw Error('浏览器只能发送本次浏览器读取的评论');
   await assertBrowserReady(page);
   if(config.personalBrowserEnabled&&(!browserBinding||monitors[targetId()]?.browserBinding!==browserBinding.id||browserBinding.ownName!==config.ownName))throw Error('浏览器账号确认已失效，请重新确认并建立监听起点');
+  if(threadCount(records,targetId(),r.rootCommentId||r.commentId)>=conversationLimit(config.maxReplyRounds??3)){r.status='ignored_conversation';r.reason='已达到本条对话回复上限';await persist();return false;}
   const grounding=currentGrounding();if((r.generation?.references?.contextHash&&r.generation.references.contextHash!==grounding.references.contextHash)||(!r.generation?.references&&grounding.references.knowledgeBaseId))throw Error('作品资料或知识库已变更，请重新生成后发送');
   if(!config.selectors.sent)throw Error('请先配置发送成功标记并诊断页面，再发送回复');
   const today=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});const total=records.filter(x=>x.attemptDay===today&&['sent','sending','uncertain'].includes(x.status)).length;if(total>=config.dailyLimit)throw Error('已达到每日发送上限（包含结果不明的提交）');
@@ -258,7 +265,7 @@ async function action(name,body){
     if(name==='browser-personal-config'){
       if(!config.personalBrowserEnabled)throw Error('请先启用个人浏览器模式');
       const ownName=String(body.ownName||'').trim();if(!ownName||ownName.length>100)throw Error('请填写当前登录账号的准确昵称');
-      const next=validateConfig({...config,ownName,interval:Number(body.interval??10),dailyLimit:Number(body.dailyLimit??20),autoSend:body.autoSend===true});
+      const next=validateConfig({...config,ownName,interval:Number(body.interval??10),dailyLimit:Number(body.dailyLimit??20),autoSend:body.autoSend===true,maxReplyRounds:conversationLimit(body.maxReplyRounds??3)});
       if(next.ownName!==config.ownName)browserBinding=null;config=next;await persist();return {};
     }
     if(name==='personal-mode'){if(!['personal','official'].includes(body.mode))throw Error('模式无效');config.assistantMode=body.mode;await persist();return {};}

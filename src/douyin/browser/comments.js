@@ -11,7 +11,7 @@ export async function readComments(page,selectors,limit=100){
   return result;
 }
 export async function uniqueComment(page,selectors,comment){
-  const rows=page.locator(selectors.row);const matches=[];
+  const rows=page.locator(comment.rootCommentId?'[data-e2e="comment-list"] [data-e2e="comment-item"]':selectors.row);const matches=[];
   if(comment.commentId&&/^\d+$/.test(comment.commentId)){await rows.filter({has:page.locator(`[id="tooltip_${comment.commentId}"]`)}).first().waitFor({state:'visible',timeout:10000}).catch(()=>{});}
   for(let i=0;i<await rows.count();i++){
     const row=rows.nth(i);if(!await row.isVisible())continue;
@@ -21,6 +21,12 @@ export async function uniqueComment(page,selectors,comment){
   }
   if(matches.length!==1){const error=Error('评论未显示或存在同名同文评论，请在浏览器定位后重试');if(matches.length===0)error.code='COMMENT_NOT_VISIBLE';throw error;}
   return matches[0];
+}
+export async function expandConversations(page,records,target){
+  const roots=[...new Set(records.filter(r=>r.workId===target&&r.status==='sent'&&r.source!=='manual-import').map(r=>r.rootCommentId||r.commentId))].slice(0,20);
+  for(const id of roots){if(!/^\d+$/.test(id||''))continue;const roots=page.locator('[data-e2e="comment-list"] [data-e2e="comment-item"]').filter({has:page.locator(`[id="tooltip_${id}"]`)});if(await roots.count()!==1)continue;
+    const button=roots.getByText(/^(?:展开|查看|共).*\d+.*回复|^展开更多回复$/).filter({visible:true});if(await button.count()===1)await button.click({timeout:1500});
+  }
 }
 export async function waitForNewReply(locator,before,timeout=10000){
   const deadline=Date.now()+timeout;

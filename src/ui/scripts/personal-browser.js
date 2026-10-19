@@ -47,6 +47,10 @@ const policy=document.createElement('div');policy.className='reply-policy';reply
 for(const id of ['browserReplyMode','browserDailyLimit']){const input=$(id);const field=document.createElement('div');field.append(input.previousElementSibling,input);policy.append(field);}
 markField('browserReplyMode','回复方式',true);markField('browserDailyLimit','每日发送上限',true);
 const advancedBrowser=document.createElement('details');advancedBrowser.innerHTML='<summary>高级设置 · 检查频率与手动读取</summary>';
+const rounds=document.createElement('div');rounds.innerHTML='<label for="browserMaxRounds">同一对话最多回复轮数（默认3轮）</label><input id="browserMaxRounds" type="number" min="1" max="10" value="3"><p class="small">包含首次回复；同一条一级评论下累计最多发送此轮数。</p>';policy.append(rounds);
+const saveRoundsSettings=$('saveBrowserPersonalConfig').onclick;$('saveBrowserPersonalConfig').onclick=()=>run(async()=>{ensurePersonalWork();await post('browser-personal-config',{ownName:$('browserOwnName').value,interval:Number($('browserInterval').value),dailyLimit:Number($('browserDailyLimit').value),maxReplyRounds:Number($('browserMaxRounds').value),autoSend:$('browserReplyMode').value==='auto'});await refresh();message('自动回复设置已保存。');});
+let roundsLoaded=false;const refreshBeforeRounds=refresh;refresh=async function(...args){await refreshBeforeRounds(...args);if(!roundsLoaded){$('browserMaxRounds').value=state.config.maxReplyRounds??3;roundsLoaded=true;}};
+names.ignored_conversation='对话停止：达到上限或回复关系未确认';
 advancedBrowser.append($('browserInterval').previousElementSibling,$('browserInterval'),$('collectPersonalBrowser'));replyStep.append(advancedBrowser);
 replyStep.append($('saveBrowserPersonalConfig'),$('startPersonalBrowser'),$('stopPersonalBrowser'),$('personalBrowserStatus'));
 const results=document.createElement('section');results.className='setup-results';results.innerHTML='<h3>评论与回复</h3><p class="small">这里展示当前作品的浏览器处理记录。完整记录可在“历史记录”中查询。</p>';results.append($('personalBrowserRecords'));personalView.append(results);
