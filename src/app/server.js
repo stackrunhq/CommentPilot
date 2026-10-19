@@ -2,6 +2,7 @@ import {Storage} from '../storage/database.js';
 import {CommentQueue,retryable,retryDelay} from '../comments/queue.js';
 import {WorkScheduler} from '../comments/scheduler.js';
 import {CommentWorker} from '../comments/worker.js';
+import {parsePersonal,importPersonal,personalRecord,personalEvent} from '../comments/personal.js';
 import {reconcileReply} from '../comments/reconciliation.js';
 import {Logger,traceRun,traceContext,errorCode,errorMetadata} from '../observability/logger.js';
 import {diagnosticReport} from '../observability/diagnostics.js';
@@ -241,6 +242,21 @@ async function action(name,body){
   if(monitoring())throw Error('请先暂停全部监听，再执行其他操作');
   if(busy||pipelineBusy())throw Error('正在处理，请稍后操作');
   busy=true;try{
+    if(name==='personal-mode'){if(!['personal','official'].includes(body.mode))throw Error('模式无效');config.assistantMode=body.mode;await persist();return {};}
+    if(name==='personal-work'){
+      const url=extractVideo(body.url),id=workId(url);if(!id)throw Error('请粘贴具体作品的完整链接，用于本机归档，不会自动访问抖音');
+      const existing=storage.work(id),connectionId=String(body.connectionId||existing?.connectionId||config.connectionId);await storage.connection(connectionId);
+      const context=String(body.context||'').trim();if(context.length>20000)throw Error('作品资料最多20000字');
+      rememberWork();storage.saveWork({...existing,id,url,title:String(body.title||'').trim()||existing?.title||'我的作品',context,connectionId,knowledgeBaseId:String(body.knowledgeBaseId||''),autoSend:false});await chooseWork(id);config.assistantMode='personal';await persist();return {id};
+    }
+    if(name==='personal-import'){if(!targetId()||!storage.work(targetId()))throw Error('请先保存作品');const result=importPersonal(records,parsePersonal(body),{workId:targetId(),video:config.video});await persist();return result;}
+    if(name==='personal-generate'){
+      if(!Array.isArray(body.keys)||!body.keys.length||body.keys.length>20)throw Error('一次选择1～20条评论');
+      const selected=[...new Set(body.keys)].map(key=>personalRecord(records,key,targetId()));if(selected.some(r=>!['new','draft','error'].includes(r.status)))throw Error('已人工确认发布的记录不能重新生成');
+      const result=[];for(const r of selected){try{await draft(r);result.push({key:r.key,ok:true});}catch{result.push({key:r.key,ok:false});}}return {results:result};
+    }
+    if(name==='personal-edit'){const r=personalRecord(records,body.key,targetId());if(!['new','draft','error'].includes(r.status))throw Error('已确认发布的记录不可修改');const reply=String(body.reply||'').trim();if(!reply||reply.length>200)throw Error('回复应为1～200字');r.reply=reply;r.status='draft';r.editedAt=new Date().toISOString();await persist();return {};}
+    if(name==='personal-copied'||name==='personal-published'){const r=personalRecord(records,body.key,targetId());if(name==='personal-published'&&body.confirmed!==true)throw Error('请先确认已经在抖音手动发布');personalEvent(r,name==='personal-copied'?'copied':'published');await persist();return {};}
     if(name==='broker-settings'){registerSecret(body.token);await brokerSettings.save(body);return {restartRequired:true};}
     if(name==='backup-full'){if(media.active)throw Error('请先等待素材解析结束');return fullBackup(storage);}
     if(name==='backup-verify'){const folder=path.resolve(String(body.folder||'')),base=path.resolve(dir,'backups')+path.sep;if(!folder.startsWith(base))throw Error('请选择本机备份目录');const m=await verifyBackup(folder);return {valid:true,files:m.entries.length};}
@@ -375,14 +391,15 @@ async function action(name,body){
     const r=records.find(x=>x.key===body.key);if(!r)throw Error('评论不存在');
     if(name==='draft'){if(!['new','draft','error'].includes(r.status))throw Error('该状态不能重新生成');await draft(r);return {};}
     if(name==='edit'){if(r.status!=='draft')throw Error('只能修改草稿');r.reply=String(body.reply||'').slice(0,200);await persist();return {};}
-    if(name==='send'){if(r.simulated)throw Error('模拟评论不能发送到抖音');await send(r);return {};}
+    if(name==='send'){if(r.source==='manual-import')throw Error('手动导入评论只能复制后自行发布，不能通过官方接口自动发送');if(r.simulated)throw Error('模拟评论不能发送到抖音');await send(r);return {};}
     throw Error('未知操作');
   }finally{busy=false;}
 }
 function commentRouteGuard(){const status=official.status();if(!status.route)throw Error('未获普通或企业评论权限，请重新授权已批准的权限');}
-const actionNames=new Set(["broker-settings","official-refresh","queue-review-list","operations-status","queue-review","pipeline-config","backup-full","backup-verify","accounts-create","accounts-select","monitor-start","monitor-stop","monitor-status","reset-scan","queue-status","verify-pending","retry-task","diagnostics-export","diagnostics-status","models-discover","works","knowledge-list","history","history-detail","backup","media-cancel","stop","caption-save","media-delete","media-start","media-accept","media-unaccept","official-authorize","official-callback","official-disconnect","official-works","ocr","works-save","works-select","knowledge-save","knowledge-delete","runtime-test","connections-save","connections-select","connections-delete","connections-test","credentials","config","model-test","extract","ocr-accept","adapt-comments","reply-inspect","open-comments","browser-inspect","diagnose","verify","browser","connect","navigate","collect","sample","start","resume","draft","edit","send"]);
+const actionNames=new Set(["personal-mode","personal-work","personal-import","personal-generate","personal-edit","personal-copied","personal-published","broker-settings","official-refresh","queue-review-list","operations-status","queue-review","pipeline-config","backup-full","backup-verify","accounts-create","accounts-select","monitor-start","monitor-stop","monitor-status","reset-scan","queue-status","verify-pending","retry-task","diagnostics-export","diagnostics-status","models-discover","works","knowledge-list","history","history-detail","backup","media-cancel","stop","caption-save","media-delete","media-start","media-accept","media-unaccept","official-authorize","official-callback","official-disconnect","official-works","ocr","works-save","works-select","knowledge-save","knowledge-delete","runtime-test","connections-save","connections-select","connections-delete","connections-test","credentials","config","model-test","extract","ocr-accept","adapt-comments","reply-inspect","open-comments","browser-inspect","diagnose","verify","browser","connect","navigate","collect","sample","start","resume","draft","edit","send"]);
 function requestOperation(req){if(req.method==='POST'&&req.url.startsWith('/api/media-upload?'))return 'media-upload';if(req.method==='GET'&&req.url.startsWith('/oauth/douyin/callback?'))return 'oauth-callback';if(req.method==='POST'&&req.url.startsWith('/api/')){const name=req.url.slice(5);return actionNames.has(name)?name:'unknown-action';}return null;}
 const server=http.createServer((req,res)=>traceRun(requestOperation(req)||'http',async()=>{const operation=requestOperation(req),began=Date.now();let failure,failureDetails={};res.setHeader('X-Trace-Id',traceContext().traceId);if(operation)logger.write('operation.started',{operation,workId:targetId()});try{
+  if(req.method==='GET'&&req.url==='/personal.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/personal.js')));}
   if(req.method==='GET'&&req.url==='/diagnostics.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/diagnostics.js')));}
   const host=req.headers.host;if(host!==`127.0.0.1:${port}`&&host!==`localhost:${port}`){res.writeHead(403);return res.end();}
   if(req.method==='POST'&&req.url.startsWith('/api/knowledge-import?')){

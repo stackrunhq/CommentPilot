@@ -14,7 +14,7 @@ export function identity(comment,target){if(comment.source==='douyin-official'&&
 export function recordBelongsToWork(record,video,target){return (target&&record.workId===target)||(target&&workId(record.video)===target)||record.video===video;}
 const belongs=recordBelongsToWork;
 function locate(records,comment,video,target){return records.find(r=>{
-  if(r.simulated||!belongs(r,video,target))return false;
+  if(r.simulated||r.source==='manual-import'||!belongs(r,video,target))return false;
   if((comment.source==='douyin-official')!==(r.source==='douyin-official'))return false;
   if(comment.commentId&&r.commentId)return r.commentId===comment.commentId;
   if(comment.commentId&&!r.commentId&&!['sent','sending','uncertain','ignored_history','observed'].includes(r.status))return false;
@@ -26,7 +26,7 @@ function append(records,comment,video,target,status,reason,sessionId,now){
 }
 export function establishBaseline(records,comments,{video,target,now=new Date().toISOString()}){
   const session={sessionId:randomUUID(),since:now,baselineCount:comments.length,target};
-  for(const record of records)if(!record.simulated&&belongs(record,video,target)&&['new','generating','draft','error','pending_time','observed'].includes(record.status)){record.status='ignored_history';record.reason='启动前的未发送任务不补发';}
+  for(const record of records)if(!record.simulated&&record.source!=='manual-import'&&belongs(record,video,target)&&['new','generating','draft','error','pending_time','observed'].includes(record.status)){record.status='ignored_history';record.reason='启动前的未发送任务不补发';}
   for(const comment of comments){const existing=locate(records,comment,video,target);if(!existing)append(records,comment,video,target,'ignored_history','启动时已存在',session.sessionId,now);}
   return session;
 }

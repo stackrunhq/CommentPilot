@@ -1,5 +1,17 @@
 # CommentPilot 开发交接记录
 
+## 最新实现：0.10.0 个人辅助回复（不打包）
+
+用户确认只有个人抖音账号，没有任何开放平台授权，并要求完成个人模式。本轮实现辅助回复，不能宣传自动读取/发布。
+
+- `src/comments/personal.js`：导入解析（1～200条，TXT/TSV每行或JSON rows），按作品+外部ID或昵称正文去重，来源manual-import且commentId为null，防止与官方ID唯一索引混淆；跨作品个人记录校验；copied只记复制，manual_published为用户确认而非sent，保存文字快照、copyCount、最近50事件。
+- `personal-work` 保存已有数字作品ID完整URL、资料/模型/KB并选择，无官方网络；`personal-import/generate/edit/copied/published` 有本地互斥、逐记录保护、生成最多20条、发布需confirmed:true。原send接口拒绝manual-import，官方基线/读取不改写手动记录。复用现有draft模型与资料约束，无事实不调用模型。
+- `src/ui/scripts/personal.js`独立导航/页面：无需官方账号配置；模型/资料保存、批量导入、生成编辑、一键复制、人工确认、筛选、历史查看。保存个人作品或点击个人入口会持久化assistantMode=personal，刷新/重启默认打开；官方模式仍保留。隐藏官方连接面板，不诱导扫码。未保存作品不允许导入/生成，剪贴板失败不记成功，编辑保留，人工确认后锁定文本。
+- `tests/unit/personal.test.js`4项；`test:personal`隔离数据、本地HTTP模型、浏览器内剪贴板替身完整验证，无官方授权、缺资料拒绝、去重、编辑复制、人工发布不同状态、API发送拒绝、作品隔离和重启保留。79项单元全通过，projects/official/diagnostics回归通过。云模型和真实抖音未测试，个人模式本来就不发送抖音请求。
+- README/CHANGELOG/`docs/个人辅助回复说明.md`、未来发布清单与版本0.10.0更新；不执行stage/dist、不推远程。客户目前还需要配置可用模型Key或本机模型，作品链接只是归档标识，不会抓取正文。无ID同昵称同正文可能误合并，已说明。
+- 后端在暂停/无活动任务状态下备份 `data/backups/CommentPilot-1792394303846.sqlite` 后重启PID26864，健康检查0.10.0，已通过personal-mode保存默认入口personal。原1模型连接、当前4评论保留，personal.js HTTP200，监听暂停。当前选中模型keyConfigured=false，用户需在模型连接中配置Key或可用本机模型；未替用户写入模拟评论或发起付费模型请求。代码提交本地Git，未推远程。
+
+
 ## 最新实现：0.9.0 本轮集中完善（不打包）
 
 用户要求把上一轮待办一次性处理。用户已明确回复抖音应用“尚未申请或仍在审批”，因此真实权限/账号读写、事件订阅、生产域名部署均不可标为实测完成。其余本地源码已集中实现，不要求逐项确认，不执行stage/dist。
