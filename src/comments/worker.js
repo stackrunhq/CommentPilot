@@ -16,7 +16,7 @@ export class CommentWorker{
   }
   async process(){
     this.synchronize();const {account,workId,sessionId}=this.scope();
-    for(let n=0;n<10&&this.running();n++){
+    for(let n=0;n<(this.maxSteps||10)&&this.running();n++){
       const task=this.queue.claim(account,workId,sessionId);if(!task)break;const r=this.records().find(r=>r.key===task.commentKey);
       if(!r||r.simulated||r.workId!==workId||r.sessionId!==sessionId||['sent','ignored_history','ignored_own'].includes(r.status)){this.queue.save({...task,status:'cancelled'});continue;}
       try{

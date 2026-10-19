@@ -19,5 +19,6 @@ export class CommentQueue{
   cancelOtherSessions(account,work,session){for(const t of this.list(account,work))if(t.sessionId!==session&&t.stage!=='verify'&&!['done','cancelled'].includes(t.status))this.save({...t,status:'cancelled'});}
   summaries(account,work){return this.db.prepare('SELECT data FROM comment_tasks WHERE account=? AND work_id=? ORDER BY created DESC,id DESC LIMIT 200').all(account||'',work||'').reverse().map(row=>{const {id,commentKey,stage,status,attempts,nextAt,errorCode}=JSON.parse(row.data);return {id,commentKey,stage,status,attempts,nextAt,errorCode};});}
   stats(account,work){return this.db.prepare('SELECT status,count(*) count FROM comment_tasks WHERE account=? AND work_id=? GROUP BY status').all(account||'',work||'');}
+  backlog(account,work){const row=this.db.prepare("SELECT count(*) count,min(created) oldest FROM comment_tasks WHERE account=? AND work_id=? AND status IN ('ready','retry_wait','running') AND stage!='verify'").get(account||'',work||'');return {count:row.count,oldestAgeSeconds:row.oldest===null?0:Math.max(0,Math.floor((this.now()-row.oldest)/1000))};}
   verificationDue(account,work){return !!this.db.prepare("SELECT 1 FROM comment_tasks WHERE account=? AND work_id=? AND stage='verify' AND status IN ('ready','retry_wait') AND next_at<=? LIMIT 1").get(account||'',work||'',this.now());}
 }

@@ -4,10 +4,13 @@ $listener=Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 3210 -State 
 if($listener){
   $state=Invoke-RestMethod -Uri 'http://127.0.0.1:3210/api/state'
   if($null -eq $state.config.selectors){throw 'Port 3210 is not this workbench; refusing to stop it.'}
+  if($state.running -or $state.anyMonitoring -or $state.busy -or $state.mediaActive){throw 'Pause all monitors and wait for active tasks before restarting.'}
   $ownerId=$listener.OwningProcess | Select-Object -Unique
   if(@($ownerId).Count -ne 1){throw 'Ambiguous listener process'}
   $process=Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId"
   if($process.Name -ne 'node.exe' -or $process.CommandLine -notmatch 'server\.js'){throw 'Listener is not the expected Node backend'}
+  $backup=Invoke-RestMethod -Uri 'http://127.0.0.1:3210/api/backup' -Method Post -Headers @{'x-local-app'='douyin-reply'} -ContentType 'application/json' -Body '{}'
+  if(-not $backup.file){throw 'Backup failed; refusing to stop backend.'}
   Write-Output 'Restarting CommentPilot. Saved encrypted model connections are retained.'
   Stop-Process -Id $ownerId
   Wait-Process -Id $ownerId -Timeout 10 -ErrorAction SilentlyContinue

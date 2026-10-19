@@ -15,6 +15,7 @@ try{
   browser=await chromium.launch({headless:true});const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base);
   await page.waitForFunction(()=>document.querySelector('#officialStatus')?.textContent.includes('等待管理员'));
   assert.equal(await page.locator('#officialPanel').isVisible(),true);assert.equal(await page.locator('[data-action="browser"]').isVisible(),false);
+  assert.equal(await page.locator('#multiworkPanel').isVisible(),true);
   await page.getByRole('button',{name:'抖音授权',exact:true}).click();await page.waitForFunction(()=>document.body.textContent.includes('Client Key'));
   assert.deepEqual(errors,[]);console.log('Official default backend/UI smoke passed; no browser transport or Douyin network request used.');
 }finally{if(browser)await browser.close();await new Promise(resolve=>{if(child.exitCode!==null)return resolve();child.once('exit',resolve);child.send({type:'shutdown'});setTimeout(()=>child.kill(),5000).unref();});await rm(dir,{recursive:true,force:true});}
