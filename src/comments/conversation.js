@@ -1,6 +1,6 @@
 export function conversationLimit(value=3){const n=Number(value);if(!Number.isInteger(n)||n<1||n>10)throw Error('最多回复轮数需为1～10的整数');return n;}
 export function threadRecords(records,workId,rootId){return records.filter(r=>r.workId===workId&&(r.rootCommentId||r.commentId)===rootId&&!r.simulated&&r.source!=='manual-import');}
-export function threadCount(records,workId,rootId){return threadRecords(records,workId,rootId).filter(r=>['sent','sending','uncertain'].includes(r.status)).length;}
+export function threadCount(records,workId,rootId){return threadRecords(records,workId,rootId).filter(r=>['sent','sending','uncertain','manual_confirmed'].includes(r.status)).length;}
 export function followups(comments,records,{workId,ownName,maxRounds=3}){
   return comments.filter(c=>c.author!==ownName).map(c=>{const thread=threadRecords(records,workId,c.rootCommentId);const parent=comments.filter(p=>p.commentId===c.replyToCommentId&&p.author===ownName);const matched=parent.length===1?thread.filter(r=>r.status==='sent'&&r.reply===parent[0].text):[];
     const linked=matched.filter(r=>r.commentId===parent[0]?.replyToCommentId);

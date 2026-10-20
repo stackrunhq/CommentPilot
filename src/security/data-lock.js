@@ -1,0 +1,4 @@
+import {randomUUID} from 'node:crypto';
+import {openSync,readFileSync,writeFileSync,closeSync,unlinkSync} from 'node:fs';
+import path from 'node:path';
+export function lockDataDirectory(dir){const file=path.join(dir,'backend.lock');let fd;try{fd=openSync(file,'wx');}catch(error){if(error.code!=='EEXIST')throw error;let previous;try{previous=JSON.parse(readFileSync(file,'utf8'));}catch{throw Error('数据目录锁损坏，请确认所有实例已退出后移除backend.lock');}try{process.kill(previous.pid,0);throw Error('该数据目录已有后端运行，请关闭重复实例');}catch(e){if(e.code!=='ESRCH')throw e;}unlinkSync(file);fd=openSync(file,'wx');}const token=randomUUID();writeFileSync(fd,JSON.stringify({pid:process.pid,token}));closeSync(fd);const release=()=>{try{if(JSON.parse(readFileSync(file,'utf8')).token===token)unlinkSync(file);}catch{}};process.once('exit',release);return release;}

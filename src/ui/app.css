@@ -12,3 +12,5 @@ main{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:star
 @media(max-width:560px){body{padding:16px 12px}header h1{font-size:24px}header p{font-size:11px}.panel{padding:18px}nav button{padding:10px 12px;font-size:12px}#historyForm{grid-template-columns:1fr}.tools button{flex:1 0 40%}}
 
 .setup-step label:has(input[type=checkbox]){display:flex;align-items:flex-start;gap:8px;line-height:1.7}.setup-step input[type=checkbox]{min-height:0;margin-top:4px;flex-shrink:0}
+
+#serviceThreads{max-height:650px;overflow:auto;margin-top:18px}#serviceThreads .entity-card>summary{font-weight:600}#servicePanel{margin-top:20px}#servicePolicyForm label:has(input[type=checkbox]){display:flex;align-items:start;gap:8px;line-height:1.6}#servicePolicyForm input[type=checkbox]{width:auto}#preflightResults p{padding:8px 12px;background:#f5f7fc;border-radius:6px}

@@ -1,3 +1,5 @@
+import {ServiceControls} from '../comments/service-controls.js';
+import {lockDataDirectory} from '../security/data-lock.js';
 import {conversationLimit,followups,threadCount} from '../comments/conversation.js';
 import {expandConversations} from '../douyin/browser/comments.js';
 import {Storage} from '../storage/database.js';
@@ -13,14 +15,14 @@ import {DouyinOfficial} from '../douyin/official.js';
 import {AccountRegistry} from '../douyin/accounts.js';
 import {BrokerSettings} from '../douyin/broker-settings.js';
 import {validatePolicy,reviewTasks,workStatistics} from '../comments/operations.js';
-import {fullBackup,verifyBackup} from '../storage/full-backup.js';
+import {fullBackup,verifyBackup,restoreBackup} from '../storage/full-backup.js';
 import {importKnowledge} from '../knowledge/import.js';
 import {MediaManager,maxUpload} from '../media/service.js';
 import {providerPresets,discoverModels} from '../models/providers.js';
 import {groundedContext} from '../knowledge/context.js';
 import http from 'node:http';
 import net from 'node:net';
-import {readFile,mkdir} from 'node:fs/promises';
+import {readFile,mkdir,readdir} from 'node:fs/promises';
 import {projectRoot,uiRoot} from './paths.js';
 import path from 'node:path';
 import {chromium} from 'playwright';
@@ -47,7 +49,9 @@ if(!Number.isInteger(port)||port<1024||port>65535)throw Error('APP_PORT must be 
 await new Promise((resolve,reject)=>{const probe=net.createServer();probe.once('error',()=>reject(Error(`${port} 端口已占用，请先检查已运行的工作台`)));probe.listen(port,'127.0.0.1',()=>probe.close(resolve));});
 const allowedOrigins=[`http://127.0.0.1:${port}`,`http://localhost:${port}`];
 const defaults={video:'',model:'deepseek-chat',context:'',tone:'自然、友好、简短',ownName:'',interval:10,dailyLimit:20,autoSend:false,selectors:{...douyinSelectors}};
+lockDataDirectory(dir);
 const storage=new Storage(dir);
+const controls=new ServiceControls(storage);
 const logger=new Logger(dir,{db:storage.db});storage.logger=logger;
 
 const fatal=error=>{logger.write('process.failed',{errorCode:errorCode(error)},'error');console.error('程序发生未处理异常，请查看脱敏诊断记录。');process.exit(1);};
@@ -90,8 +94,8 @@ function targetId(){return workId(config.video)||workId(boundUrl);}
 function currentContent(){return workContents[workId(config.video)]||null;}
 function currentGrounding(cfg=config,query=''){const profile=storage.work(workId(cfg.video));return groundedContext(cfg,workContents[workId(cfg.video)]||null,profile,profile?.knowledgeBaseId?storage.knowledge(profile.knowledgeBaseId):null,query);}
 const groundingFor=(cfg,query)=>currentGrounding(cfg,query);
-function rememberWork(){const id=workId(config.video);if(!id)return;const previous=storage.work(id);storage.saveWork({...previous,id,url:config.video,title:previous?.title||currentContent()?.body?.slice(0,60)||`作品 ${id}`,context:config.context,connectionId:config.connectionId,tone:config.tone,ownName:config.ownName,interval:config.interval,dailyLimit:config.dailyLimit,autoSend:config.autoSend,accountSlot:previous?.accountSlot||config.accountSlot||official.slot});}
-async function chooseWork(id){const w=storage.work(id);if(!w)throw Error('作品不存在');if(w.accountSlot){official=accounts.get(w.accountSlot);worker.official=official;}const connectionId=w.connectionId||config.connectionId,c=await storage.connection(connectionId);config={...config,accountSlot:w.accountSlot||official.slot,video:w.url,context:w.context||'',connectionId,model:c.model,tone:w.tone||defaults.tone,ownName:w.ownName||config.ownName,interval:w.interval||10,dailyLimit:w.dailyLimit||20,autoSend:w.autoSend??false};apiKey=c.key;boundUrl='';diagnostics=null;modelCheck=null;collectStats=null;contentStatus='已切换作品，请连接浏览器读取内容';await persist();return w;}
+function rememberWork(){const id=workId(config.video);if(!id)return;const previous=storage.work(id);storage.saveWork({...previous,id,url:config.video,title:previous?.title||currentContent()?.body?.slice(0,60)||`作品 ${id}`,context:config.context,connectionId:config.connectionId,tone:config.tone,ownName:config.ownName,interval:config.interval,dailyLimit:config.dailyLimit,autoSend:config.autoSend,maxReplyRounds:config.maxReplyRounds??3,accountSlot:previous?.accountSlot||config.accountSlot||official.slot});}
+async function chooseWork(id){const w=storage.work(id);if(!w)throw Error('作品不存在');if(w.accountSlot){official=accounts.get(w.accountSlot);worker.official=official;}const connectionId=w.connectionId||config.connectionId,c=await storage.connection(connectionId);config={...config,accountSlot:w.accountSlot||official.slot,video:w.url,context:w.context||'',connectionId,model:c.model,tone:w.tone||defaults.tone,ownName:w.ownName||config.ownName,interval:w.interval||10,dailyLimit:w.dailyLimit||20,autoSend:w.autoSend??false,maxReplyRounds:w.maxReplyRounds??3};apiKey=c.key;boundUrl='';diagnostics=null;modelCheck=null;collectStats=null;contentStatus='已切换作品，请连接浏览器读取内容';await persist();return w;}
 async function syncWork(){if(officialMode){
   const w=await official.work(targetId());const content={...workContents[w.id],id:w.id,body:w.title,source:'抖音官方发布文案（title 字段，可能不完整）',imageUrls:[],notice:'官方发布文案与媒体内容分开处理。请导入作品原图、动图或原视频进行识别，核对后再用于回复。',extractedAt:new Date().toISOString()};
   workContents[w.id]=content;boundUrl=w.url;contentStatus='已读取官方发布文案；导入素材可补充画面和语音';await persist();return content;
@@ -111,6 +115,7 @@ function persist(){storage.save({config,records,workContents,monitors});remember
 async function activeConnection(){return storage.connection(config.connectionId);}
 async function saveKey(key){if(!key?.trim())return;const c=storage.connections().find(c=>c.id===config.connectionId);await storage.saveConnection({...c,apiKey:key.trim()});apiKey=key.trim();}
 async function testConnection(c){
+  controls.checkBudget();
   const call={created:new Date().toISOString(),status:'running',kind:'connection_test',connectionId:c.id,connectionName:c.name,provider:c.provider,model:c.model};call.id=storage.attempt('model_calls',call);const began=Date.now();
   try{const reply=await generateReply({...config,connection:c,context:'连接测试，无需业务资料'},c.key,{author:'测试',text:'请简短打个招呼。'},result=>Object.assign(call,result));call.response=reply;call.status='succeeded';return {reply};}
   catch(e){call.status='failed';call.error=e.message;throw e;}
@@ -144,27 +149,30 @@ async function snapshot(){
   return [...top,...followups(replies,records,{workId:targetId(),ownName:config.ownName,maxRounds:conversationLimit(config.maxReplyRounds??3)})];
 }
 async function collect(){const list=await snapshot();collectStats=ingestComments(records,list,{video:config.video,target:targetId(),ownName:config.ownName,session:running?monitors[targetId()]:null});
+  if(!officialMode)controls.limitPending(records,targetId());
   if(pendingScan&&monitors[targetId()]?.sessionId===pendingScan.sessionId){monitors[targetId()].scan=pendingScan.result.checkpoint;monitors[targetId()].scanStatus={pagesRead:pendingScan.result.pages,complete:pendingScan.result.complete,historySkipped:pendingScan.historySkipped};collectStats.history+=pendingScan.historySkipped;collectStats.visible+=pendingScan.historySkipped;}
   await persist();if(officialMode&&running)worker.synchronize();logger.write('comments.collected',{workId:targetId(),count:collectStats.visible,...collectStats});log('评论检查完成：读取 '+collectStats.visible+' 条，新评论 '+collectStats.added+'，历史 '+collectStats.history+'，重复 '+collectStats.duplicate);return collectStats.added;
 }
 async function draft(r,cfg=config){
+  controls.checkBudget();
   const config=cfg,targetId=()=>workId(cfg.video),currentGrounding=()=>groundingFor(cfg,r.text);
   if(!recordBelongsToWork(r,config.video,targetId()))throw Error('请先切换到这条评论所属作品');
-  const connection=await storage.connection(cfg.connectionId);const grounding=currentGrounding(),background=grounding.text;const call={commentKey:r.key,created:new Date().toISOString(),status:'running',connectionId:connection.id,connectionName:connection.name,provider:connection.provider,model:connection.model,background,references:grounding.references,comment:{author:r.author,text:r.text}};call.id=storage.attempt('model_calls',call);
+  const connection=await storage.connection(cfg.connectionId);const grounding=currentGrounding(),background=grounding.text;const call={commentKey:r.key,created:new Date().toISOString(),status:'running',connectionId:connection.id,connectionName:connection.name,provider:connection.provider,model:connection.model,background,references:grounding.references,comment:{author:r.author,text:r.text}};controls.checkBudget();call.id=storage.attempt('model_calls',call);
   const began=Date.now();r.status='generating';r.lastError='';r.generation={model:connection.model,connectionId:connection.id,provider:connection.provider,references:grounding.references,startedAt:new Date().toISOString(),status:'running'};
   log(`开始调用 模型服务：评论 ${r.commentId||r.key}，模型 ${config.model}`,{workId:targetId(),event:'model_start',commentId:r.commentId});await persist();
   try{r.reply=await generateReply({...config,model:connection.model,connection,context:background},connection.key,r,result=>Object.assign(r.generation,result));r.status='draft';r.generation.status='succeeded';log(`模型服务 已生成回复：评论 ${r.commentId||r.key}，耗时 ${((Date.now()-began)/1000).toFixed(1)} 秒`,{workId:targetId(),event:'model_success',commentId:r.commentId});}
   catch(error){r.status='error';r.lastError=error.message;r.generation.status='failed';log(`模型服务 生成失败：${error.message}`,{workId:targetId(),event:'model_error',commentId:r.commentId});throw error;}
   finally{r.generation.finishedAt=new Date().toISOString();r.generation.durationMs=Date.now()-began;storage.attempt('model_calls',{...call,...r.generation,status:r.generation.status,response:r.generation.status==='succeeded'?r.reply:'',error:r.lastError});await persist();}
 }
-async function send(r,guard=()=>true){if(officialMode)return sendOfficial(r,guard);checkPage();if(r.status!=='draft')throw Error('只有草稿可以发送');if(!recordBelongsToWork(r,config.video,targetId()))throw Error('该评论不属于当前目标作品');if(!config.ownName)throw Error('先填写当前登录账号昵称，用于排除自己的评论');if(!r.reply.trim())throw Error('回复不能为空');
+async function send(r,guard=()=>true,options={}){if(officialMode)return sendOfficial(r,guard);checkPage();if(r.status!=='draft')throw Error('只有草稿可以发送');if(!recordBelongsToWork(r,config.video,targetId()))throw Error('该评论不属于当前目标作品');if(!config.ownName)throw Error('先填写当前登录账号昵称，用于排除自己的评论');if(!r.reply.trim())throw Error('回复不能为空');
   if(r.source==='manual-import'||r.source==='douyin-official')throw Error('浏览器只能发送本次浏览器读取的评论');
   await assertBrowserReady(page);
   if(config.personalBrowserEnabled&&(!browserBinding||monitors[targetId()]?.browserBinding!==browserBinding.id||browserBinding.ownName!==config.ownName))throw Error('浏览器账号确认已失效，请重新确认并建立监听起点');
   if(threadCount(records,targetId(),r.rootCommentId||r.commentId)>=conversationLimit(config.maxReplyRounds??3)){r.status='ignored_conversation';r.reason='已达到本条对话回复上限';await persist();return false;}
   const grounding=currentGrounding();if((r.generation?.references?.contextHash&&r.generation.references.contextHash!==grounding.references.contextHash)||(!r.generation?.references&&grounding.references.knowledgeBaseId))throw Error('作品资料或知识库已变更，请重新生成后发送');
   if(!config.selectors.sent)throw Error('请先配置发送成功标记并诊断页面，再发送回复');
-  const today=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});const total=records.filter(x=>x.attemptDay===today&&['sent','sending','uncertain'].includes(x.status)).length;if(total>=config.dailyLimit)throw Error('已达到每日发送上限（包含结果不明的提交）');
+  controls.assertSend(r,records,options);
+  const today=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});const total=records.filter(x=>x.attemptDay===today&&['sent','sending','uncertain','manual_confirmed'].includes(x.status)).length;if(total>=config.dailyLimit)throw Error('已达到每日发送上限（包含结果不明的提交）');
   // Match the currently visible author and text again; duplicates are ambiguous.
   let row;try{row=await uniqueComment(page,config.selectors,r);}catch(error){
     if(error.code!=='COMMENT_NOT_VISIBLE')throw error;
@@ -191,8 +199,8 @@ async function sendOfficial(r,guard=()=>true,rt=null){
   if(monitors[targetId()]?.account!==fingerprint)throw Error('授权账号已变化，请重新启动监听建立基线');
   if(r.generation?.references?.contextHash!==currentGrounding().references.contextHash)throw Error('作品资料已变更，请重新生成');
   const today=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});
-  if(records.filter(x=>x.workId===targetId()&&x.attemptDay===today&&['sent','sending','uncertain'].includes(x.status)).length>=cfg.dailyLimit)throw Error('已达到每日发送上限');
-  if(records.filter(x=>x.submission?.account===fingerprint&&x.attemptDay===today&&['sent','sending','uncertain'].includes(x.status)).length>=200)throw Error('已达到当前账号每日200条提交总上限');
+  if(records.filter(x=>x.workId===targetId()&&x.attemptDay===today&&['sent','sending','uncertain','manual_confirmed'].includes(x.status)).length>=cfg.dailyLimit)throw Error('已达到每日发送上限');
+  if(records.filter(x=>x.submission?.account===fingerprint&&x.attemptDay===today&&['sent','sending','uncertain','manual_confirmed'].includes(x.status)).length>=200)throw Error('已达到当前账号每日200条提交总上限');
   if(!guard())throw Error('已暂停，未提交');
   const wait=Math.max(0,lastOfficialSubmission+3000-Date.now());if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
   const before=await official.replies(targetId(),r.commentId);if(!guard())throw Object.assign(Error('已暂停，未提交回复'),{code:'NOT_SUBMITTED'});
@@ -210,9 +218,10 @@ async function runBrowserCycle(){if(!running||busy)return;const began=Date.now()
   checkPage();if(!officialMode){navigationStartedAt=Date.now();await page.reload({waitUntil:'domcontentloaded',timeout:30000});}if(!running)return;await collect();
   for(let processed=0;running&&processed<5;processed++){
     const r=[...records].reverse().find(x=>!x.simulated&&(x.status==='new'||(config.autoSend&&x.status==='draft'&&x.deliveryState==='waiting_dom'))&&x.workId===targetId()&&x.sessionId===monitors[targetId()]?.sessionId);if(!r)break;
+    if(controls.control(r.workId,r.rootCommentId||r.commentId).mode!=='auto'||(!r.reviewApproved&&controls.reviewReason(r))){r.status='review';r.reason=controls.reviewReason(r)||'对话已转人工或关闭';await persist();continue;}
     if(r.status==='new')await draft(r);if(running&&config.autoSend&&await send(r,()=>running)===false)break;
   }
-}catch(e){logger.write('monitor.failed',{workId:targetId(),outcome:'failed',...errorMetadata(e)},'error');log(redactText(e.message));running=false;}finally{busy=false;if(running)timer=setTimeout(cycle,pollDelay(config.interval,began));}}
+}catch(e){logger.write('monitor.failed',{workId:targetId(),outcome:'failed',...errorMetadata(e)},'error');log(redactText(e.message));controls.audit('monitor.paused',{reason:redactText(e.message)});running=false;}finally{busy=false;if(running)timer=setTimeout(cycle,pollDelay(config.interval,began));}}
 async function runCycle(){return officialMode?runOfficialCycle():runBrowserCycle();}
 async function runOfficialCycle(){if(!running||busy)return;const began=Date.now();busy=true;try{
   checkPage();const session=monitors[targetId()];if(session?.account!==official.accountFingerprint())throw Error('授权账号已变化，请重新建立监听');
@@ -234,6 +243,16 @@ async function reconcileRecord(r,id=targetId(),client=official){
 }
 async function action(name,body){
   for(const key of ['apiKey','code','state'])registerSecret(body?.[key]);
+  if(name==='service-status')return {...controls.status(records,targetId()),runtime:{running:monitoring(),busy:busy||pipelineBusy(),browserOpen:!!browser,scan:collectStats,monitorSince:monitors[targetId()]?.since||null,lastErrors:records.filter(r=>r.workId===targetId()&&(r.lastError||r.status==='uncertain')).slice(0,5).map(r=>({key:r.key,status:r.status,message:r.lastError||'提交结果不明；先在抖音核对，不要重发'}))}};
+  if(name==='work-export'){const work=storage.work(targetId());if(!work)throw Error('请先选择作品');return {format:'commentpilot-work-export-v1',createdAt:new Date().toISOString(),work,records:records.filter(r=>r.workId===targetId()).map(r=>({...r,...storage.details(r.key)})),notice:'包含评论、回复和模型资料正文，请保管好导出文件；不含API Key或登录凭据'};}
+  if(name==='preflight'){
+    const checks=[];const add=(id,label,ok,fix)=>checks.push({id,label,ok:!!ok,fix});
+    add('work','作品已保存',!!storage.work(targetId()),'保存作品与资料');const c=await activeConnection();add('model','模型凭据已配置',c.auth==='none'||!!c.key,'在模型连接中保存Key，或使用本地模型');
+    try{currentGrounding();add('facts','回复资料可用',true,'');}catch{add('facts','回复资料可用',false,'补充已核对的文案或绑定知识库');}
+    add('browser','账号与作品已确认',officialMode?official.status().authorized:!!browserBinding&&browserBinding.workId===targetId()&&browserBinding.ownName===config.ownName,'打开浏览器登录并确认本人账号及目标作品');
+    try{controls.checkBudget();add('budget','今日调用预算可用',true,'');}catch(e){add('budget','今日调用预算可用',false,e.message);}
+    return {ready:checks.every(c=>c.ok),checks,scope:officialMode?'官方接口，权限以实际获批能力为准':'单作品，当前页面可加载评论；楼中楼最多展开20条对话，不保证全量'};
+  }
   if(name==='diagnostics-export'){logger.write('diagnostics.exported');return diagnosticReport(storage,logger,{version:appVersion,running:monitoring(),busy,transport:transport(),mediaActive:media.active,official:official.status(),limit:body.limit});}
   if(name==='diagnostics-status')return {healthy:!logger.failed,retentionDays:logger.retentionDays,maxEvents:10000,fileBytes:logger.maxBytes,fileBackups:logger.backups};
   if(name==='models-discover'){
@@ -252,11 +271,26 @@ async function action(name,body){
   if(name==='queue-review-list'){const id=String(body.workId||targetId()),account=monitors[id]?.account;return {tasks:queue.list(account,id).filter(t=>t.status==='review'&&t.stage!=='verify').slice(0,100).map(t=>({...t,record:records.find(r=>r.key===t.commentKey)}))};}
   if(name==='backup')return {file:await storage.backup()};
   if(name==='media-cancel'){media.cancel();return {};}
-  if(name==='stop'){monitorStartEpoch++;stopAllWorks();running=false;clearTimeout(timer);log('已暂停，已提交的请求可能仍在完成');return {};}
+  if(name==='stop'){controls.audit('monitor.stopped');monitorStartEpoch++;stopAllWorks();running=false;clearTimeout(timer);log('已暂停，已提交的请求可能仍在完成');return {};}
   if(name==='monitor-start'){if(!officialMode)throw Error('多作品监听仅支持官方接口');if(running||busy||scheduler.busy||media.active)throw Error('正在处理，请稍后重试');busy=true;try{return await startWorkMonitor(String(body.id),!!body.resume);}finally{busy=false;}}
   if(monitoring())throw Error('请先暂停全部监听，再执行其他操作');
   if(busy||pipelineBusy())throw Error('正在处理，请稍后操作');
   busy=true;try{
+    if(name==='work-redact'){
+      const id=targetId();if(!id||String(body.confirmWorkId)!==id)throw Error('请输入当前作品ID确认清除文本');if(media.active)throw Error('请先等待素材任务结束');
+      const backup=await fullBackup(storage);if(browser){await browser.close();browser=null;page=null;browserBinding=null;boundUrl='';}const selected=records.filter(r=>r.workId===id);
+      for(const r of selected){controls.setControl(id,r.rootCommentId||r.commentId,'closed');const keep=Object.fromEntries(['key','workId','commentId','rootCommentId','replyToCommentId','video','source','created','sentAt','attemptDay','status','sessionId','simulated'].filter(k=>r[k]!==undefined).map(k=>[k,r[k]]));Object.keys(r).forEach(k=>delete r[k]);Object.assign(r,keep,{author:'已清除',text:'正文已清除',reply:'',redactedBody:true});if(!['sent','sending','uncertain','manual_confirmed'].includes(r.status))r.status='rejected';
+        for(const table of ['model_calls','reply_attempts'])for(const row of storage.db.prepare(`SELECT id,data FROM ${table} WHERE comment_key=?`).all(r.key)){const data=JSON.parse(row.data),minimal=Object.fromEntries(['id','commentKey','created','status','usage','model','provider','connectionId','durationMs','finishedAt','sentAt','replyId'].filter(k=>data[k]!==undefined).map(k=>[k,data[k]]));storage.db.prepare(`UPDATE ${table} SET data=? WHERE id=?`).run(JSON.stringify({...minimal,redactedBody:true}),row.id);}
+      }
+      config.context='';delete workContents[id];storage.db.prepare('DELETE FROM works WHERE id=?').run(id);storage.db.prepare('DELETE FROM work_content_versions WHERE work_id=?').run(id);const w=storage.work(id);if(w)storage.saveWork({...w,context:'',knowledgeBaseId:''});await persist();controls.audit('work.text_cleared',{work:id,count:selected.length});return {backup:backup.folder,count:selected.length,notice:'当前作品文本已清除，去重标识和轮数保留，对话已关闭。原媒体、共享知识库及历史备份仍保留，需另行管理。'};
+    }
+    if(name==='service-backups'){const folder=path.join(dir,'backups');await mkdir(folder,{recursive:true});return {backups:(await readdir(folder,{withFileTypes:true})).filter(e=>e.isDirectory()&&e.name.startsWith('Full-')).map(e=>e.name).sort().reverse().slice(0,50)};}
+    if(name==='service-restore'){const name=String(body.name||'');if(!/^Full-[\w-]+$/.test(name))throw Error('请选择完整备份');const destination=path.join(dir,'restores','Restore-'+Date.now());await mkdir(path.dirname(destination),{recursive:true});const result=await restoreBackup(path.join(dir,'backups',name),destination);controls.audit('backup.restored',{files:result.files});return {...result,notice:'已恢复至独立目录，当前数据未切换。关闭程序后按部署说明使用恢复目录。'};}
+    if(name==='service-policy')return controls.save(body);
+    if(name==='service-cleanup'){if(body.confirmed!==true)throw Error('请先查看清理范围并确认');return controls.cleanup();}
+    if(name==='conversation-control'){if(officialMode)throw Error('此入口仅管理个人浏览器对话');if(!records.some(r=>r.workId===targetId()&&(r.rootCommentId||r.commentId)===body.root))throw Error('当前作品未找到该对话');return controls.setControl(targetId(),String(body.root),body.mode);}
+    if(name==='review-personal'){if(officialMode)throw Error('请使用官方审核入口');const r=records.find(r=>r.key===body.key&&r.workId===targetId());if(!r||!['review','draft'].includes(r.status))throw Error('请选择待审核评论或草稿');if(body.reject){r.status='rejected';r.reason='人工跳过';}else{if(!r.reply){await draft(r);r.status='review';r.reviewApproved=false;}else{r.reviewApproved=true;r.status='draft';}}controls.audit('review.completed',{key:r.key,rejected:!!body.reject});await persist();return {};}
+    if(name==='browser-outcome'){const r=records.find(r=>r.key===body.key&&r.workId===targetId()&&r.status==='uncertain'&&r.source!=='douyin-official');if(!r||body.confirmed!==true)throw Error('只能人工确认当前作品结果不明的浏览器记录');r.status='manual_confirmed';r.reason='用户在平台核对后确认已发布，未经程序核验';r.manualVerifiedAt=new Date().toISOString();controls.audit('reply.manually_confirmed',{key:r.key});await persist();return {};}
     if(name==='browser-personal-enable'){
       if(typeof body.enabled!=='boolean')throw Error('模式设置无效');
       if(browser){await browser.close();browser=null;page=null;}browserBinding=null;boundUrl='';
@@ -334,7 +368,7 @@ async function action(name,body){
     if(name==='connections-save'){const c=await storage.saveConnection(body);if(body.makeDefault||!config.connectionId||config.connectionId===c.id){config.connectionId=c.id;config.model=c.model;apiKey=(await storage.connection(c.id)).key;modelCheck=null;await persist();}return {id:c.id};}
     if(name==='connections-select'){const c=await storage.connection(body.id);config.connectionId=c.id;config.model=c.model;apiKey=c.key;modelCheck=null;await persist();return {};}
     if(name==='connections-delete'){if(body.id===config.connectionId)throw Error('请先选择其他默认连接');storage.deleteConnection(body.id);return {};}
-    if(name==='connections-test')return testConnection(await storage.connection(body.id));
+    if(name==='connections-test'){controls.checkBudget();return testConnection(await storage.connection(body.id));}
     if(name==='credentials'){
       if(config.connectionId!=='legacy-deepseek'){await saveKey(body.apiKey);return {keyConfigured:!!apiKey};}
 
@@ -397,6 +431,7 @@ async function action(name,body){
     if(name==='sample'){const text=String(body.text||'').trim();if(!text)throw Error('请输入模拟评论');records.unshift({key:crypto.randomUUID(),author:'模拟用户',text,video:config.video,simulated:true,status:'new',reply:'',created:new Date().toISOString()});await persist();return {};}
     if((name==='start'||name==='resume')&&officialMode){await persist();return startWorkMonitor(targetId(),name==='resume');}
     if(name==='start'||name==='resume'){
+      controls.checkBudget();
       if(media.active)throw Error('请等待或取消素材解析任务，再启动监听');
       if((await activeConnection()).auth!=='none'&&!apiKey)throw Error('请配置当前模型连接的 API Key');
       try{await syncWork();}catch(error){contentStatus=error.message;currentGrounding();}
@@ -408,7 +443,7 @@ async function action(name,body){
         const previous=monitors[targetId()];if(officialMode&&previous?.account!==official.accountFingerprint())throw Error('请重新启动监听，不能恢复旧账号或浏览器基线');if(!previous?.sessionId||!Number.isFinite(Date.parse(previous.since)))throw Error('该作品没有可恢复的监听，请使用启动监听建立历史基线');
         if(config.personalBrowserEnabled&&previous.browserBinding!==browserBinding.id)throw Error('浏览器已重新打开或账号重新确认，请启动新监听，不能沿用旧账号会话');
         if(!officialMode&&config.autoSend&&!config.selectors.sent)throw Error('自动发送前必须配置发送成功标记');
-        log(`继续上次监听：保留起点 ${previous.since}，检查间隔 ${config.interval} 秒`);running=true;timer=setTimeout(cycle,0);return {};
+        log(`继续上次监听：保留起点 ${previous.since}，检查间隔 ${config.interval} 秒`);controls.audit('monitor.started',{work:targetId(),resume:name==='resume'});running=true;timer=setTimeout(cycle,0);return {};
       }
       const baseline=await snapshot();
       if(!officialMode&&!baseline.length&&await page.locator('[data-e2e="comment-list"]').filter({visible:true}).count()!==1)throw Error('评论区尚未加载，无法建立历史边界');
@@ -421,15 +456,16 @@ async function action(name,body){
     }
     const r=records.find(x=>x.key===body.key);if(!r)throw Error('评论不存在');
     if(name==='draft'){if(!['new','draft','error'].includes(r.status))throw Error('该状态不能重新生成');await draft(r);return {};}
-    if(name==='edit'){if(r.status!=='draft')throw Error('只能修改草稿');r.reply=String(body.reply||'').slice(0,200);await persist();return {};}
-    if(name==='send'){if(r.source==='manual-import')throw Error('手动导入评论只能复制后自行发布，不能通过官方接口自动发送');if(r.simulated)throw Error('模拟评论不能发送到抖音');await send(r);return {};}
+    if(name==='edit'){if(r.status!=='draft')throw Error('只能修改草稿');r.reply=String(body.reply||'').slice(0,200);r.reviewApproved=false;controls.audit('draft.edited',{key:r.key});await persist();return {};}
+    if(name==='send'){if(r.source==='manual-import')throw Error('手动导入评论只能复制后自行发布，不能通过官方接口自动发送');if(r.simulated)throw Error('模拟评论不能发送到抖音');await send(r,()=>true,{manual:true});return {};}
     throw Error('未知操作');
   }finally{busy=false;}
 }
 function commentRouteGuard(){const status=official.status();if(!status.route)throw Error('未获普通或企业评论权限，请重新授权已批准的权限');}
-const actionNames=new Set(["browser-personal-enable","browser-personal-config","personal-mode","personal-work","personal-import","personal-generate","personal-edit","personal-copied","personal-published","broker-settings","official-refresh","queue-review-list","operations-status","queue-review","pipeline-config","backup-full","backup-verify","accounts-create","accounts-select","monitor-start","monitor-stop","monitor-status","reset-scan","queue-status","verify-pending","retry-task","diagnostics-export","diagnostics-status","models-discover","works","knowledge-list","history","history-detail","backup","media-cancel","stop","caption-save","media-delete","media-start","media-accept","media-unaccept","official-authorize","official-callback","official-disconnect","official-works","ocr","works-save","works-select","knowledge-save","knowledge-delete","runtime-test","connections-save","connections-select","connections-delete","connections-test","credentials","config","model-test","extract","ocr-accept","adapt-comments","reply-inspect","open-comments","browser-inspect","diagnose","verify","browser","connect","navigate","collect","sample","start","resume","draft","edit","send"]);
+const actionNames=new Set(["work-redact","work-export","preflight","service-backups","service-restore","service-status","service-policy","service-cleanup","conversation-control","review-personal","browser-outcome","browser-personal-enable","browser-personal-config","personal-mode","personal-work","personal-import","personal-generate","personal-edit","personal-copied","personal-published","broker-settings","official-refresh","queue-review-list","operations-status","queue-review","pipeline-config","backup-full","backup-verify","accounts-create","accounts-select","monitor-start","monitor-stop","monitor-status","reset-scan","queue-status","verify-pending","retry-task","diagnostics-export","diagnostics-status","models-discover","works","knowledge-list","history","history-detail","backup","media-cancel","stop","caption-save","media-delete","media-start","media-accept","media-unaccept","official-authorize","official-callback","official-disconnect","official-works","ocr","works-save","works-select","knowledge-save","knowledge-delete","runtime-test","connections-save","connections-select","connections-delete","connections-test","credentials","config","model-test","extract","ocr-accept","adapt-comments","reply-inspect","open-comments","browser-inspect","diagnose","verify","browser","connect","navigate","collect","sample","start","resume","draft","edit","send"]);
 function requestOperation(req){if(req.method==='POST'&&req.url.startsWith('/api/media-upload?'))return 'media-upload';if(req.method==='GET'&&req.url.startsWith('/oauth/douyin/callback?'))return 'oauth-callback';if(req.method==='POST'&&req.url.startsWith('/api/')){const name=req.url.slice(5);return actionNames.has(name)?name:'unknown-action';}return null;}
 const server=http.createServer((req,res)=>traceRun(requestOperation(req)||'http',async()=>{const operation=requestOperation(req),began=Date.now();let failure,failureDetails={};res.setHeader('X-Trace-Id',traceContext().traceId);if(operation)logger.write('operation.started',{operation,workId:targetId()});try{
+  if(req.method==='GET'&&req.url==='/service.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/service.js')));}
   if(req.method==='GET'&&req.url==='/personal-browser.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/personal-browser.js')));}
   if(req.method==='GET'&&req.url==='/personal.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/personal.js')));}
   if(req.method==='GET'&&req.url==='/diagnostics.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/diagnostics.js')));}
@@ -472,6 +508,8 @@ server.on('error',error=>{
 });
 server.listen(port,'127.0.0.1',()=>console.log(`本地管理页面：http://127.0.0.1:${port}`));
 // Read only: after login the target page may finish loading without another click.
+let lastMaintenanceAttempt=0;
+const maintenanceWatcher=setInterval(async()=>{if(!controls.policy().autoMaintenance||monitoring()||busy||pipelineBusy()||media.active||Date.now()-lastMaintenanceAttempt<86400000)return;lastMaintenanceAttempt=Date.now();busy=true;try{const backup=await fullBackup(storage);await controls.cleanup();controls.audit('maintenance.completed',{files:backup.files});log('自动维护完成：已完整备份并清理过期明细');}catch(error){logger.write('maintenance.failed',{outcome:'failed',...errorMetadata(error)});log('自动维护失败，请在设置中手动备份并检查磁盘空间');}finally{busy=false;}},60000);maintenanceWatcher.unref();
 const contentWatcher=setInterval(async()=>{if(busy||monitoring()||!browser)return;selectWorkPage();if(!page||page.isClosed()||!sameWork(config.video,page.url()))return;busy=true;try{await syncWork();}catch(error){contentStatus=error.message;}finally{busy=false;}},5000);contentWatcher.unref();
 let verificationCursor=0;
 const verificationWatcher=setInterval(async()=>{if(!officialMode||busy||deliveries.busy||media.active)return;
@@ -537,5 +575,5 @@ const eventWatcher=setInterval(async()=>{if(eventsBusy||busy)return;eventsBusy=t
   }
 }catch(error){logger.write('events.failed',errorMetadata(error),'error');}finally{eventsBusy=false;}},10000);eventWatcher.unref();
 
-async function shutdown(){clearInterval(eventWatcher);clearInterval(multiWatcher);stopAllWorks();clearInterval(verificationWatcher);logger.write('process.stopping');media.cancel();if(media.active)await media.active.completion;running=false;clearTimeout(timer);clearInterval(contentWatcher);while(pipelineBusy())await new Promise(resolve=>setTimeout(resolve,100));try{if(browser)await browser.close();await persist();}finally{server.close();process.exit(0);}}
+async function shutdown(){clearInterval(maintenanceWatcher);clearInterval(eventWatcher);clearInterval(multiWatcher);stopAllWorks();clearInterval(verificationWatcher);logger.write('process.stopping');media.cancel();if(media.active)await media.active.completion;running=false;clearTimeout(timer);clearInterval(contentWatcher);while(pipelineBusy())await new Promise(resolve=>setTimeout(resolve,100));try{if(browser)await browser.close();await persist();}finally{server.close();process.exit(0);}}
 process.on('message',message=>{if(message?.type==='shutdown')void shutdown();});

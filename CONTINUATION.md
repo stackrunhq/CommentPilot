@@ -1,3 +1,11 @@
+## 2026-10-20 0.12.0 本机服务管理（不打包）
+
+本轮实现并验证：启动检查与未保存设置拦截；按作品保存轮数；模型调用/已知Token预算；敏感关键词与积压转人工；先生成再审核，改稿清除审核标记；对话接管/关闭/恢复；结果不明单独人工确认；运行覆盖范围和错误提示；完整记录导出；先备份再清理过期明细；完整备份列表与新目录恢复；可选空闲时每日自动维护；按作品文本清除保留防重/轮数/用量；同一数据目录进程锁；本机管理审计。
+
+源码新增 src/comments/service-controls.js、src/security/data-lock.js、src/ui/scripts/service.js；测试新增 service-controls.test.js（三项）及 npm run test:service。85项单元、service/personal/official/projects/diagnostics通过，真实平台仍未联调。详细边界见 docs/服务管理与验收说明.md。
+
+不能称全部企业能力完成：多人身份权限、跨设备锁、独立告警、签名自动更新与回滚、浏览器多作品并行/全量分页、精确金额预算及媒体调用预算尚未完成；生产部署与真实平台验收需外部条件。当前为单机单用户自部署版本。未stage/dist、未推远程。
+
 ## 2026-10-19 楼中楼追问与轮数限制
 
 - 个人浏览器模式被动解析页面产生的楼中楼响应，尝试展开最近20条已发送对话的回复；仅处理明确指向本程序已确认回复的新追问。回复关系不明确则跳过，不重放私有接口。
@@ -199,3 +207,5 @@
 本轮UI验证：桌面1440px截图已检查，390px无横向溢出、页面脚本零异常、三步布局/六处必填标识。后端经备份重启PID10144，仍暂停。截图data/ui-workflow.png仅本机，不纳入Git。
 
 本轮服务更新PID25248，已备份，监听保持暂停。UI轮数显示3且脚本零异常。未打包、未发送真实评论。
+
+0.12运行验收：备份data/backups/CommentPilot-1792457885638.sqlite后重启PID52468；health=0.12.0，personal-browser，running=false/busy=false，原4条评论及1个连接保留。自动维护默认false。新增test:service实际点击验证维护策略保存；85单元及service/personal/personal-browser/official/official-flow/projects/multiwork/diagnostics通过。实际页面零脚本异常、390px无横向溢出。官方服务及并发设置折叠到高级区。截图data/ui-service.png、data/ui-maintenance.png未纳入版本。
