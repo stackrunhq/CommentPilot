@@ -1,4 +1,5 @@
 import {approveDraft,assertApproved} from '../comments/approval.js';
+import {monitorFailure} from '../comments/failure-scope.js';
 import {readRetry,navigationInterrupted} from '../douyin/browser/read-retry.js';
 import {waitForPublicationOrReply,matchesPublishRequest} from '../douyin/browser/publication.js';
 import {fillReplyEditor,assertReplyTarget} from '../douyin/browser/comments.js';
@@ -180,7 +181,7 @@ async function send(r,guard=()=>true,options={}){if(officialMode)return sendOffi
   // Match the currently visible author and text again; duplicates are ambiguous.
   let row;try{row=await uniqueComment(page,config.selectors,r);}catch(error){
     if(error.code!=='COMMENT_NOT_VISIBLE')throw error;
-    r.deliveryState='waiting_dom';r.domWaitAttempts=(r.domWaitAttempts||0)+1;r.lastError='已生成回复，等待原评论在页面加载';log(r.lastError,{commentId:r.commentId,event:'send_waiting_dom'});await persist();if(r.domWaitAttempts>=3)throw Error('连续3次无法定位原评论，已暂停，请检查浏览器页面');return false;
+    r.deliveryState='waiting_dom';r.domWaitAttempts=(r.domWaitAttempts||0)+1;r.lastError='已生成回复，等待原评论在页面加载';log(r.lastError,{commentId:r.commentId,event:'send_waiting_dom'});await persist();if(r.domWaitAttempts>=3)throw Error('连续3次无法定位原评论，本条转人工，请检查浏览器页面');return false;
   }
   const sentMatches=config.selectors.sent==='@exact-reply-text'?row.getByText(r.reply,{exact:true}):row.locator(config.selectors.sent).filter({hasText:r.reply});const previousCount=await sentMatches.count();
   const editor=await activateReply(page,row,config.selectors);await assertReplyTarget(row,r.commentId);await fillReplyEditor(editor,r.reply);
@@ -192,7 +193,7 @@ async function send(r,guard=()=>true,options={}){if(officialMode)return sendOffi
   let blockedPublication=false;const publishPattern=/\/comment\/publish\//;const publishGuard=async route=>{if(!matchesPublishRequest(route.request().postData(),{workId:targetId(),parentId:r.commentId,text:r.reply})){blockedPublication=true;await route.abort();return;}await route.fallback();};await page.route(publishPattern,publishGuard);
   try{lastBrowserSubmission=Date.now();await button.click({timeout:5000});if(blockedPublication)throw Error('已拦截回复目标不匹配的请求，未发布');
     const confirmation=await waitForPublicationOrReply(sentMatches,previousCount,commentTimes.publications||[],{workId:targetId(),parentId:r.commentId,text:r.reply,ownName:config.ownName,since:lastBrowserSubmission});r.browserConfirmation=confirmation;if(confirmation.replyId)r.browserReplyId=confirmation.replyId;r.status='sent';r.deliveryState='done';r.lastError='';r.sentAt=new Date().toISOString();log(`已确认回复：评论 ${r.commentId||r.key}（${confirmation.method}）`,{event:'send_success',commentId:r.commentId});
-  }catch(error){r.status=blockedPublication?'review':'uncertain';if(blockedPublication)r.reviewRequired=true;r.lastError=blockedPublication?'已阻止发往错误评论或一级评论的请求，未发布':'提交后未确认新增回复：'+redactText(error.message).split('\n')[0];controls.audit('monitor.paused',{reason:r.lastError});log(r.lastError+'；不会自动重发');running=false;clearTimeout(timer);}finally{await page.unroute(publishPattern,publishGuard).catch(()=>{});}
+  }catch(error){r.status=blockedPublication?'review':'uncertain';if(blockedPublication)r.reviewRequired=true;r.lastError=blockedPublication?'已阻止发往错误评论或一级评论的请求，未发布':'提交后未确认新增回复：'+redactText(error.message).split('\n')[0];controls.audit('reply.isolated',{key:r.key,reason:r.lastError});log(r.lastError+'；本条不自动重发，继续监听其他新评论');}finally{await page.unroute(publishPattern,publishGuard).catch(()=>{});}
   storage.attempt('reply_attempts',{...attempt,status:r.status,finishedAt:new Date().toISOString(),sentAt:r.sentAt});await persist();
 }
 async function sendOfficial(r,guard=()=>true,rt=null){assertApproved(r);
@@ -226,7 +227,8 @@ async function runBrowserCycle(){if(!running||busy)return;const began=Date.now()
   for(let processed=0;running&&processed<5;processed++){
     const r=[...records].reverse().find(x=>!x.simulated&&(x.status==='new'||(config.autoSend&&x.status==='draft'&&x.deliveryState==='waiting_dom'))&&x.workId===targetId()&&x.sessionId===monitors[targetId()]?.sessionId);if(!r)break;
     if(controls.control(r.workId,r.rootCommentId||r.commentId).mode!=='auto'||(!r.reviewApproved&&controls.reviewReason(r))){r.status='review';r.reviewRequired=true;r.reason=controls.reviewReason(r)||'对话已转人工或关闭';await persist();continue;}
-    if(r.status==='new')await draft(r);if(running&&config.autoSend){try{if(await send(r,()=>running)===false)break;}catch(error){if(r.status!=='draft'||!navigationInterrupted(error)||(r.navigationRetries||0)>=2)throw error;r.navigationRetries=(r.navigationRetries||0)+1;r.deliveryState='waiting_dom';r.lastError='页面刷新打断定位，尚未提交，等待页面恢复后定位原评论';log(r.lastError);await persist();break;}}
+    try{if(r.status==='new')await draft(r);if(running&&config.autoSend){try{if(await send(r,()=>running)===false)continue;}catch(error){if(r.status!=='draft'||!navigationInterrupted(error)||(r.navigationRetries||0)>=2)throw error;r.navigationRetries=(r.navigationRetries||0)+1;r.deliveryState='waiting_dom';r.lastError='页面刷新打断定位，尚未提交，等待页面恢复后定位原评论';log(r.lastError);await persist();break;}}}
+    catch(error){if(monitorFailure(error))throw error;if(['sending','uncertain'].includes(r.status)){r.status='uncertain';}else{r.status=r.reply?'review':'error';if(r.reply)r.reviewRequired=true;}r.lastError=redactText(error.message).split('\n')[0];r.deliveryState='isolated';controls.audit('reply.isolated',{key:r.key,reason:r.lastError});log('单条评论已隔离，继续处理其他新评论：'+r.lastError);await persist();}
   }
 }catch(e){logger.write('monitor.failed',{workId:targetId(),outcome:'failed',...errorMetadata(e)},'error');log(redactText(e.message));controls.audit('monitor.paused',{reason:redactText(e.message)});running=false;}finally{busy=false;if(running)timer=setTimeout(cycle,Math.max(pollDelay(config.interval,began),(monitors[targetId()]?.readRetry?.nextAt||0)-Date.now()));}}
 async function runCycle(){return officialMode?runOfficialCycle():runBrowserCycle();}
