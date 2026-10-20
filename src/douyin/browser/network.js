@@ -27,7 +27,7 @@ export function parseReplySnapshot(url,body){
   const comments=(Array.isArray(body.comments)?body.comments:[]).flatMap(c=>{
     if(typeof c.cid!=='string'||!/^\d+$/.test(c.cid)||!c.user?.nickname||typeof c.text!=='string'||!Number.isSafeInteger(c.create_time)||c.create_time<1000000000||c.create_time>5000000000)return [];
     const parent=String(c.reply_to_reply_id||c.reply_id||'');
-    return [{commentId:c.cid,rootCommentId:rootId,replyToCommentId:parent,author:c.user.nickname,text:c.text.trim(),publishedAt:new Date(c.create_time*1000).toISOString(),source:'浏览器楼中楼响应'}];
+    return [{commentId:c.cid,rootCommentId:rootId,replyToCommentId:parent,author:c.user.nickname,authorId:typeof c.user.uid==='string'?c.user.uid:undefined,text:c.text.trim(),publishedAt:new Date(c.create_time*1000).toISOString(),source:'浏览器楼中楼响应'}];
   });return {target,rootId,comments};
 }
 export function parseCommentSnapshot(url,body){
@@ -40,7 +40,7 @@ export function parseCommentSnapshot(url,body){
   const comments=raw.flatMap(c=>{
     const id=c.cid??c.comment_id,author=c.user?.nickname,text=c.text;
     if(typeof id!=='string'||!/^\d+$/.test(id)||!author||typeof text!=='string'||!text.trim()||(c.reply_id&&String(c.reply_id)!=='0'))return [];
-    return [{commentId:id,author:String(author),text:text.trim(),publishedAt:times.get(id),source:'浏览器评论列表响应'}];
+    return [{commentId:id,author:String(author),authorId:typeof c.user?.uid==='string'?c.user.uid:undefined,text:text.trim(),publishedAt:times.get(id),source:'浏览器评论列表响应'}];
   });
   return {target,comments,total:body.total??raw.length};
 }

@@ -1,6 +1,6 @@
 {
   "name": "commentpilot",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "CommentPilot 多模型评论回复工作台",
   "author": "CommentPilot",
   "private": true,
@@ -23,6 +23,7 @@
     "test:desktop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verification/desktop.ps1",
     "test:diagnostics": "node tests/integration/diagnostics.mjs",
     "broker": "node src/broker/server.js",
+    "test:performance": "node tests/performance/history.mjs",
     "test:service": "node tests/integration/service.mjs",
     "test:personal-browser": "node tests/integration/personal-browser.mjs",
     "test:personal": "node tests/integration/personal.mjs",

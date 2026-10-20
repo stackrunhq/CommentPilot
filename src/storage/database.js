@@ -10,7 +10,7 @@ import {traceContext,errorMetadata} from '../observability/logger.js';
 
 export class Storage{
   constructor(dir){
-    this.dir=dir;mkdirSync(dir,{recursive:true});this.db=new DatabaseSync(path.join(dir,'commentpilot.sqlite'));
+    this.dir=dir;this.recordCache=new Map();mkdirSync(dir,{recursive:true});this.db=new DatabaseSync(path.join(dir,'commentpilot.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS app_state(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL);
@@ -18,11 +18,13 @@ export class Storage{
       CREATE TABLE IF NOT EXISTS comments(key TEXT PRIMARY KEY,work_id TEXT,comment_id TEXT,status TEXT,created TEXT,data TEXT NOT NULL);
       CREATE UNIQUE INDEX IF NOT EXISTS comment_identity ON comments(work_id,comment_id) WHERE comment_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS comment_history ON comments(work_id,status,created);
+      CREATE INDEX IF NOT EXISTS comment_work_latest ON comments(work_id);
       CREATE TABLE IF NOT EXISTS works(id TEXT PRIMARY KEY,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS work_content_versions(id INTEGER PRIMARY KEY,work_id TEXT,created TEXT,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS monitor_sessions(work_id TEXT PRIMARY KEY,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS monitor_session_history(id TEXT PRIMARY KEY,work_id TEXT,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS model_calls(id TEXT PRIMARY KEY,comment_key TEXT,created TEXT,status TEXT,data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS model_call_date ON model_calls(created);
       CREATE TABLE IF NOT EXISTS reply_attempts(id TEXT PRIMARY KEY,comment_key TEXT,created TEXT,status TEXT,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,time TEXT,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS managed_works(id TEXT PRIMARY KEY,data TEXT NOT NULL);
@@ -44,11 +46,11 @@ export class Storage{
   }
   transaction(fn){this.db.exec('BEGIN IMMEDIATE');try{const result=fn();this.db.exec('COMMIT');return result;}catch(e){this.db.exec('ROLLBACK');throw e;}}
   load(){return JSON.parse(this.db.prepare('SELECT data FROM app_state WHERE id=1').get().data);}
-  save(state){this.transaction(()=>{
+  save(state){const changes=[];this.transaction(()=>{
     const {records=[],workContents={},monitors={},...rest}=state;
     this.db.prepare('INSERT OR REPLACE INTO app_state VALUES(1,?)').run(JSON.stringify(rest));
     const record=this.db.prepare('INSERT INTO comments VALUES(?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET work_id=excluded.work_id,comment_id=excluded.comment_id,status=excluded.status,created=excluded.created,data=excluded.data');
-    for(const r of records)record.run(r.key,r.workId||workId(r.video)||null,r.simulated?null:r.commentId||null,r.status,r.created||'',JSON.stringify(r));
+    for(const r of records){const serialized=JSON.stringify(r);if(this.recordCache.get(r.key)===serialized)continue;record.run(r.key,r.workId||workId(r.video)||null,r.simulated?null:r.commentId||null,r.status,r.created||'',serialized);changes.push([r.key,serialized]);}
     for(const [id,data]of Object.entries(workContents)){
       const serialized=JSON.stringify(data),old=this.db.prepare('SELECT data FROM works WHERE id=?').get(id);
       // Extraction timestamps change on every scan; version only meaningful context changes.
@@ -57,7 +59,7 @@ export class Storage{
       this.db.prepare('INSERT OR REPLACE INTO works VALUES(?,?)').run(id,serialized);
     }
     for(const [id,data]of Object.entries(monitors)){this.db.prepare('INSERT OR REPLACE INTO monitor_sessions VALUES(?,?)').run(id,JSON.stringify(data));if(data.sessionId)this.db.prepare('INSERT OR REPLACE INTO monitor_session_history VALUES(?,?,?)').run(data.sessionId,id,JSON.stringify(data));}
-  });}
+  });for(const [key,data]of changes)this.recordCache.set(key,data);}
   state(){const state=this.load();state.records=this.db.prepare('SELECT data FROM comments ORDER BY rowid').all().map(x=>JSON.parse(x.data));state.workContents=Object.fromEntries(this.db.prepare('SELECT * FROM works').all().map(x=>[x.id,JSON.parse(x.data)]));state.monitors=Object.fromEntries(this.db.prepare('SELECT * FROM monitor_sessions').all().map(x=>[x.work_id,JSON.parse(x.data)]));return state;}
   ensureDefault(){if(this.connections().length)return;const state=this.load();const c={id:'legacy-deepseek',...validateConnection({...providerPresets.deepseek,provider:'deepseek',model:state.config?.model||'deepseek-chat'})};this.db.prepare('INSERT INTO model_connections VALUES(?,?,?)').run(c.id,JSON.stringify(c),'');}
   connections(){return this.db.prepare('SELECT * FROM model_connections').all().map(r=>({...JSON.parse(r.data),keyConfigured:!!r.secret}));}

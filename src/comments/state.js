@@ -26,7 +26,7 @@ function append(records,comment,video,target,status,reason,sessionId,now){
 }
 export function establishBaseline(records,comments,{video,target,now=new Date().toISOString()}){
   const session={sessionId:randomUUID(),since:now,baselineCount:comments.length,target};
-  for(const record of records)if(!record.simulated&&record.source!=='manual-import'&&belongs(record,video,target)&&['new','generating','draft','error','pending_time','observed'].includes(record.status)){record.status='ignored_history';record.reason='启动前的未发送任务不补发';}
+  for(const record of records)if(!record.simulated&&record.source!=='manual-import'&&belongs(record,video,target)&&['new','generating','draft','error','pending_time','pending_relation','observed'].includes(record.status)){record.status='ignored_history';record.reason='启动前的未发送任务不补发';}
   for(const comment of comments){const existing=locate(records,comment,video,target);if(!existing)append(records,comment,video,target,'ignored_history','启动时已存在',session.sessionId,now);}
   return session;
 }
@@ -34,7 +34,7 @@ export function ingestComments(records,comments,{video,target,ownName,session,no
   const stats={visible:comments.length,added:0,own:0,history:0,unverified:0,duplicate:0};
   for(const comment of comments){
     let record=locate(records,comment,video,target);
-    if(record&&record.status!=='pending_time'){stats.duplicate++;continue;}
+    if(record&&!['pending_time','pending_relation'].includes(record.status)){stats.duplicate++;continue;}
     let status,reason;
     if(!session){status='observed';reason='尚未启动监听，不加入自动队列';}
     else if(comment.isOwn||(comment.source!=='douyin-official'&&comment.author.trim()===ownName.trim())){status='ignored_own';reason='自己的评论';stats.own++;}
@@ -47,9 +47,10 @@ export function ingestComments(records,comments,{video,target,ownName,session,no
       else if(range.earliest<since){status='pending_time';reason='发布时间跨越启动边界，等待进一步确认';stats.unverified++;}
       else{status='new';reason='本次监听启动后发布的新评论';stats.added++;}
     }
-    if(status==='new'&&comment.conversationBlocked){status='ignored_conversation';reason=comment.conversationReason;stats.added--;stats.unverified++;}
-    if(record){Object.assign(record,{publishedLabel:comment.publishedLabel,publishedAt:comment.publishedAt,status,reason,sessionId:session?.sessionId});}
-    else append(records,comment,video,target,status,reason,session?.sessionId,now);
+    if(status==='new'&&comment.conversationBlocked){status=comment.conversationPending?'pending_relation':comment.conversationReview?'review':'ignored_conversation';reason=comment.conversationReason;stats.added--;stats.unverified++;}
+    if(record?.status==='pending_relation'){const attempts=(record.relationAttempts||0)+1;if(attempts>=12&&status==='pending_relation'){status='review';reason='连续12次未确认回复关系，转人工';record.reviewRequired=true;}record.relationAttempts=attempts;}
+    if(record){Object.assign(record,{publishedLabel:comment.publishedLabel,publishedAt:comment.publishedAt,parentRecordId:comment.parentRecordId,conversationHistory:comment.conversationHistory,conversationPending:comment.conversationPending,conversationBlocked:comment.conversationBlocked,status,reason,sessionId:session?.sessionId});}
+    else {const added=append(records,comment,video,target,status,reason,session?.sessionId,now);if(status==='review')added.reviewRequired=true;}
   }
   return stats;
 }

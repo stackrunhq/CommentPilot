@@ -17,6 +17,8 @@ async function refreshService(force=false){if(!state||(!force&&Date.now()-lastSe
  const monitorEvent=data.audit.find(e=>e.action.startsWith('monitor.'));if(!state.running&&monitorEvent?.action==='monitor.paused')$('serviceHealth').textContent+=' · 暂停原因：'+monitorEvent.data.reason+'；修复后重新检查，结果不明的回复先在平台核对';
  if(!servicePolicyLoaded){$('serviceCalls').value=p.dailyModelCalls;$('serviceTokens').value=p.dailyTokens;$('servicePending').value=p.maxPending;$('serviceRetention').value=p.retentionDays;$('serviceKeywords').value=p.reviewKeywords;$('serviceAutoMaintenance').checked=!!p.autoMaintenance;servicePolicyLoaded=true;}
  $('serviceCleanupPreview').textContent=`按${p.retentionDays}天保留期，预计清理调用明细${data.cleanup.calls}条、事件${data.cleanup.events}条。`;
+ if(data.maintenance.nextAt)$('serviceCleanupPreview').textContent+=' 自动维护下一次最早执行：'+new Date(data.maintenance.nextAt).toLocaleString()+'；上次状态：'+({completed:'完成',failed:'失败，请手动检查',running:'执行中或上次中断，未确认完成'}[data.maintenance.status]||'未执行');
+ if(state.recordsTotal>state.records.length)$('serviceHealth').textContent+=` · 工作台仅显示最近${state.records.length}条，完整历史可分页查看`;
  $('serviceAudit').textContent=data.audit.map(a=>new Date(a.time).toLocaleString()+' · '+a.action).join('\n')||'暂无管理操作';
  if($('serviceThreads').querySelector('textarea:focus'))return;$('serviceThreads').replaceChildren();
  for(const thread of data.conversations){const box=document.createElement('details');box.className='entity-card';box.append(serviceText('summary',`对话 ${thread.root} · 累计${thread.rounds}/${state.config.maxReplyRounds??3}次 · ${thread.mode==='auto'?'自动':thread.mode==='manual'?'人工接管':'已关闭'}`));
@@ -41,7 +43,8 @@ $('serviceFullBackup').onclick=()=>run(async()=>{const result=await post('backup
 $('serviceListBackups').onclick=()=>run(async()=>{const result=await post('service-backups');$('serviceBackupSelect').replaceChildren(...result.backups.map(name=>new Option(name,name)));});
 $('serviceRestore').onclick=()=>run(async()=>{const result=await post('service-restore',{name:$('serviceBackupSelect').value});$('serviceMaintenanceResult').textContent=result.notice+' 目录：'+result.folder;});
 names.review='待人工审核';names.rejected='人工跳过';names.manual_confirmed='人工确认已发布（未程序核验）';
+names.pending_relation='回复关系待重查（不会发送）';
 // Advanced official console stays available, without competing with the personal flow.
 for(const b of nav.querySelectorAll('[data-view="work"]'))b.textContent='高级工作台';
-const beforeServiceRefresh=refresh;refresh=async function(...args){await beforeServiceRefresh(...args);if(personalActive||!$('settingsView').hidden)await refreshService();};
+const beforeServiceRefresh=refresh;refresh=async function(...args){await beforeServiceRefresh(...args);if(state.recordsTotal>state.records.length)$('commentSummary').textContent+=` · 当前展示最近${state.records.length}/${state.recordsTotal}条，完整记录请到历史记录分页查询`;if(personalActive||!$('settingsView').hidden)await refreshService();};
 run(()=>refreshService(true));

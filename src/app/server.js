@@ -1,3 +1,4 @@
+import {approveDraft,assertApproved} from '../comments/approval.js';
 import {ServiceControls} from '../comments/service-controls.js';
 import {lockDataDirectory} from '../security/data-lock.js';
 import {conversationLimit,followups,threadCount} from '../comments/conversation.js';
@@ -189,7 +190,7 @@ async function send(r,guard=()=>true,options={}){if(officialMode)return sendOffi
   }catch{r.status='uncertain';log('发送结果不明，请在抖音页面人工核实；不会自动重发');running=false;clearTimeout(timer);}
   storage.attempt('reply_attempts',{...attempt,status:r.status,finishedAt:new Date().toISOString(),sentAt:r.sentAt});await persist();
 }
-async function sendOfficial(r,guard=()=>true,rt=null){
+async function sendOfficial(r,guard=()=>true,rt=null){assertApproved(r);
   const official=rt?.official||selectedOfficial();
   const cfg=rt?.config||config, targetId=()=>workId(cfg.video), currentGrounding=()=>groundingFor(cfg), workerFor=rt?.worker||worker;
   const stop=()=>{if(rt)stopWork(rt.id);else {running=false;clearTimeout(timer);}};
@@ -218,7 +219,7 @@ async function runBrowserCycle(){if(!running||busy)return;const began=Date.now()
   checkPage();if(!officialMode){navigationStartedAt=Date.now();await page.reload({waitUntil:'domcontentloaded',timeout:30000});}if(!running)return;await collect();
   for(let processed=0;running&&processed<5;processed++){
     const r=[...records].reverse().find(x=>!x.simulated&&(x.status==='new'||(config.autoSend&&x.status==='draft'&&x.deliveryState==='waiting_dom'))&&x.workId===targetId()&&x.sessionId===monitors[targetId()]?.sessionId);if(!r)break;
-    if(controls.control(r.workId,r.rootCommentId||r.commentId).mode!=='auto'||(!r.reviewApproved&&controls.reviewReason(r))){r.status='review';r.reason=controls.reviewReason(r)||'对话已转人工或关闭';await persist();continue;}
+    if(controls.control(r.workId,r.rootCommentId||r.commentId).mode!=='auto'||(!r.reviewApproved&&controls.reviewReason(r))){r.status='review';r.reviewRequired=true;r.reason=controls.reviewReason(r)||'对话已转人工或关闭';await persist();continue;}
     if(r.status==='new')await draft(r);if(running&&config.autoSend&&await send(r,()=>running)===false)break;
   }
 }catch(e){logger.write('monitor.failed',{workId:targetId(),outcome:'failed',...errorMetadata(e)},'error');log(redactText(e.message));controls.audit('monitor.paused',{reason:redactText(e.message)});running=false;}finally{busy=false;if(running)timer=setTimeout(cycle,pollDelay(config.interval,began));}}
@@ -289,7 +290,7 @@ async function action(name,body){
     if(name==='service-policy')return controls.save(body);
     if(name==='service-cleanup'){if(body.confirmed!==true)throw Error('请先查看清理范围并确认');return controls.cleanup();}
     if(name==='conversation-control'){if(officialMode)throw Error('此入口仅管理个人浏览器对话');if(!records.some(r=>r.workId===targetId()&&(r.rootCommentId||r.commentId)===body.root))throw Error('当前作品未找到该对话');return controls.setControl(targetId(),String(body.root),body.mode);}
-    if(name==='review-personal'){if(officialMode)throw Error('请使用官方审核入口');const r=records.find(r=>r.key===body.key&&r.workId===targetId());if(!r||!['review','draft'].includes(r.status))throw Error('请选择待审核评论或草稿');if(body.reject){r.status='rejected';r.reason='人工跳过';}else{if(!r.reply){await draft(r);r.status='review';r.reviewApproved=false;}else{r.reviewApproved=true;r.status='draft';}}controls.audit('review.completed',{key:r.key,rejected:!!body.reject});await persist();return {};}
+    if(name==='review-personal'){if(officialMode)throw Error('请使用官方审核入口');const r=records.find(r=>r.key===body.key&&r.workId===targetId());if(!r||!['review','draft'].includes(r.status))throw Error('请选择待审核评论或草稿');if(body.reject){r.status='rejected';r.reason='人工跳过';}else{if(!r.reply){await draft(r);r.status='review';r.reviewApproved=false;}else{approveDraft(r);r.status='draft';}}controls.audit('review.completed',{key:r.key,rejected:!!body.reject});await persist();return {};}
     if(name==='browser-outcome'){const r=records.find(r=>r.key===body.key&&r.workId===targetId()&&r.status==='uncertain'&&r.source!=='douyin-official');if(!r||body.confirmed!==true)throw Error('只能人工确认当前作品结果不明的浏览器记录');r.status='manual_confirmed';r.reason='用户在平台核对后确认已发布，未经程序核验';r.manualVerifiedAt=new Date().toISOString();controls.audit('reply.manually_confirmed',{key:r.key});await persist();return {};}
     if(name==='browser-personal-enable'){
       if(typeof body.enabled!=='boolean')throw Error('模式设置无效');
@@ -493,7 +494,7 @@ const server=http.createServer((req,res)=>traceRun(requestOperation(req)||'http'
   if(req.method==='GET'&&req.url==='/management.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/management.js')));}
   if(req.method==='GET'&&req.url==='/app.css'){res.setHeader('Content-Type','text/css; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'app.css')));}
   if(req.method==='GET'&&req.url==='/projects.js'){res.setHeader('Content-Type','text/javascript; charset=utf-8');return res.end(await readFile(path.join(uiRoot,'scripts/projects.js')));}
-  if(req.method==='GET'&&req.url==='/api/state'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({brokerSettings:brokerSettings.status(),accounts:accounts.list(),multiMonitors:runtimeState(),anyMonitoring:monitoring(),queueStats:queue.stats(official.accountFingerprint(),targetId()),queueTasks:queue.summaries(official.accountFingerprint(),targetId()),scanStatus:monitors[targetId()]?.scanStatus||null,scanRetry:monitors[targetId()]?.scanRetry||null,mediaAssets:media.assets(targetId()||''),mediaJob:media.latest(targetId()||''),mediaActive:media.active?{workId:media.active.job.workId,phase:media.active.job.phase}:null,transport:transport(),official:official.status(),connections:storage.connections(),providerPresets,config,records:records.filter(r=>recordBelongsToWork(r,config.video,targetId())),logs,running,busy:busy||pipelineBusy(),pipeline:{scan:scheduler.inflight.size,generate:generators.inflight.size,send:deliveries.inflight.size,modelConcurrency:generators.concurrency},keyConfigured:!!apiKey,browserOpen:!!browser,browserUrl:page&&!page.isClosed()?page.url():null,confirmedWorkId:workId(boundUrl),diagnostics,modelCheck,workContent:currentContent(),contentStatus,ocrProgress,monitor:monitors[targetId()]||null,collectStats}));}
+  if(req.method==='GET'&&req.url==='/api/state'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({brokerSettings:brokerSettings.status(),accounts:accounts.list(),multiMonitors:runtimeState(),anyMonitoring:monitoring(),queueStats:queue.stats(official.accountFingerprint(),targetId()),queueTasks:queue.summaries(official.accountFingerprint(),targetId()),scanStatus:monitors[targetId()]?.scanStatus||null,scanRetry:monitors[targetId()]?.scanRetry||null,mediaAssets:media.assets(targetId()||''),mediaJob:media.latest(targetId()||''),mediaActive:media.active?{workId:media.active.job.workId,phase:media.active.job.phase}:null,transport:transport(),official:official.status(),connections:storage.connections(),providerPresets,config,records:targetId()?storage.history({workId:targetId(),size:200}).records:[],recordsTotal:targetId()?storage.db.prepare('SELECT count(*) n FROM comments WHERE work_id=?').get(targetId()).n:0,logs,running,busy:busy||pipelineBusy(),pipeline:{scan:scheduler.inflight.size,generate:generators.inflight.size,send:deliveries.inflight.size,modelConcurrency:generators.concurrency},keyConfigured:!!apiKey,browserOpen:!!browser,browserUrl:page&&!page.isClosed()?page.url():null,confirmedWorkId:workId(boundUrl),diagnostics,modelCheck,workContent:currentContent(),contentStatus,ocrProgress,monitor:monitors[targetId()]||null,collectStats}));}
   if(req.method==='POST'&&req.url.startsWith('/api/')){
     if(req.headers['x-local-app']!=='douyin-reply'||(req.headers.origin&&!allowedOrigins.includes(req.headers.origin)))throw Error('非法请求来源');
     let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>2000000)throw Error('请求过大');}let body;try{body=JSON.parse(raw||'{}');}catch{throw Error('Invalid JSON request');}const result=await action(req.url.slice(5),body);res.setHeader('Content-Type','application/json');return res.end(JSON.stringify(result));}
@@ -508,8 +509,8 @@ server.on('error',error=>{
 });
 server.listen(port,'127.0.0.1',()=>console.log(`本地管理页面：http://127.0.0.1:${port}`));
 // Read only: after login the target page may finish loading without another click.
-let lastMaintenanceAttempt=0;
-const maintenanceWatcher=setInterval(async()=>{if(!controls.policy().autoMaintenance||monitoring()||busy||pipelineBusy()||media.active||Date.now()-lastMaintenanceAttempt<86400000)return;lastMaintenanceAttempt=Date.now();busy=true;try{const backup=await fullBackup(storage);await controls.cleanup();controls.audit('maintenance.completed',{files:backup.files});log('自动维护完成：已完整备份并清理过期明细');}catch(error){logger.write('maintenance.failed',{outcome:'failed',...errorMetadata(error)});log('自动维护失败，请在设置中手动备份并检查磁盘空间');}finally{busy=false;}},60000);maintenanceWatcher.unref();
+
+const maintenanceWatcher=setInterval(async()=>{if(!controls.policy().autoMaintenance||monitoring()||busy||pipelineBusy()||media.active||!controls.reserveMaintenance())return;busy=true;try{const backup=await fullBackup(storage);await controls.cleanup();controls.finishMaintenance('completed');controls.audit('maintenance.completed',{files:backup.files});log('自动维护完成：已完整备份并清理过期明细');}catch(error){controls.finishMaintenance('failed');logger.write('maintenance.failed',{outcome:'failed',...errorMetadata(error)});log('自动维护失败，请在设置中手动备份并检查磁盘空间');}finally{busy=false;}},60000);maintenanceWatcher.unref();
 const contentWatcher=setInterval(async()=>{if(busy||monitoring()||!browser)return;selectWorkPage();if(!page||page.isClosed()||!sameWork(config.video,page.url()))return;busy=true;try{await syncWork();}catch(error){contentStatus=error.message;}finally{busy=false;}},5000);contentWatcher.unref();
 let verificationCursor=0;
 const verificationWatcher=setInterval(async()=>{if(!officialMode||busy||deliveries.busy||media.active)return;

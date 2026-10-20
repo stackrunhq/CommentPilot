@@ -29,6 +29,7 @@ export class CommentWorker{
           this.queue.advance(task,'send',this.config().autoSend?'ready':'review');
         }else{
           if(!this.config().autoSend&&!task.approved){this.queue.save({...task,status:'review'});continue;}
+          try{assertApproved(r,task.approved);}catch(e){if(e.code!=='DRAFT_NOT_APPROVED')throw e;r.reviewRequired=true;this.queue.save({...task,status:'review',approved:false,reviewReason:'draft-changed'});continue;}
           await this.send(r,()=>this.running());
           if(r.status==='uncertain')this.queue.advance(task,'verify');
           else if(r.status==='sent')this.queue.save({...task,status:'done'});
@@ -51,3 +52,4 @@ export class CommentWorker{
     catch(error){this.queue.fail(task,error,{retry:retryable(error)});}
   }
 }
+import {assertApproved} from './approval.js';
