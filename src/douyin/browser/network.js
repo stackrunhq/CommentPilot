@@ -1,3 +1,4 @@
+import {parsePublication} from './publication.js';
 export function parseCommentTimes(url,body){
   let request;try{request=new URL(url);}catch{return [];}
   if(!request.hostname.endsWith('.douyin.com')||!request.pathname.includes('/comment/list/')||request.pathname.includes('/reply/'))return [];
@@ -13,7 +14,9 @@ export function trackCommentTimes(browser){
   const cache=new Map();
   cache.snapshots=new Map();
   cache.threads=new Map();
+  cache.publications=[];const requestTimes=new WeakMap();browser.on('request',request=>requestTimes.set(request,Date.now()));
   browser.on('response',async response=>{
+    if(response.url().includes('/comment/publish/')){try{const request=response.request(),started=requestTimes.get(request);if(!started)return;const publication=parsePublication(response.url(),request.postData(),await response.json(),started);if(publication){cache.publications.push(publication);if(cache.publications.length>200)cache.publications.shift();}}catch{}return;}
     if(response.url().includes('/comment/list/reply/')){try{const snapshot=parseReplySnapshot(response.url(),await response.json());if(snapshot){const key=`${snapshot.target}:${snapshot.rootId}`,previous=cache.threads.get(key);const comments=[...new Map([...(previous?.comments||[]),...snapshot.comments].map(c=>[c.commentId,c])).values()].slice(-500);cache.threads.set(key,{...snapshot,comments,receivedAt:Date.now()});if(cache.threads.size>100)cache.threads.delete(cache.threads.keys().next().value);}}catch{}return;}
     if(!response.url().includes('/comment/list/'))return;
     try{const body=await response.json();for(const item of parseCommentTimes(response.url(),body))cache.set(`${item.target}:${item.commentId}`,item.publishedAt);const snapshot=parseCommentSnapshot(response.url(),body);if(snapshot)cache.snapshots.set(snapshot.target,{...snapshot,receivedAt:Date.now()});if(cache.size>10000)for(const key of [...cache.keys()].slice(0,1000))cache.delete(key);}catch{}

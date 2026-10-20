@@ -1,5 +1,7 @@
 import {approveDraft,assertApproved} from '../comments/approval.js';
 import {readRetry,navigationInterrupted} from '../douyin/browser/read-retry.js';
+import {waitForPublicationOrReply,matchesPublishRequest} from '../douyin/browser/publication.js';
+import {fillReplyEditor,assertReplyTarget} from '../douyin/browser/comments.js';
 import {ServiceControls} from '../comments/service-controls.js';
 import {lockDataDirectory} from '../security/data-lock.js';
 import {conversationLimit,followups,threadCount} from '../comments/conversation.js';
@@ -181,14 +183,16 @@ async function send(r,guard=()=>true,options={}){if(officialMode)return sendOffi
     r.deliveryState='waiting_dom';r.domWaitAttempts=(r.domWaitAttempts||0)+1;r.lastError='已生成回复，等待原评论在页面加载';log(r.lastError,{commentId:r.commentId,event:'send_waiting_dom'});await persist();if(r.domWaitAttempts>=3)throw Error('连续3次无法定位原评论，已暂停，请检查浏览器页面');return false;
   }
   const sentMatches=config.selectors.sent==='@exact-reply-text'?row.getByText(r.reply,{exact:true}):row.locator(config.selectors.sent).filter({hasText:r.reply});const previousCount=await sentMatches.count();
-  const editor=await activateReply(page,row,config.selectors);await editor.fill(r.reply);
+  const editor=await activateReply(page,row,config.selectors);await assertReplyTarget(row,r.commentId);await fillReplyEditor(editor,r.reply);
   const button=page.locator(config.selectors.send).filter({visible:true});if(await button.count()!==1)throw Error('无法唯一定位发送按钮，请调整选择器');
   const delay=Math.max(0,lastBrowserSubmission+3000-Date.now());if(delay)await new Promise(resolve=>setTimeout(resolve,delay));await assertBrowserReady(page);checkPage();
   if(!guard())throw Error('任务已暂停，未提交');
+  await assertReplyTarget(row,r.commentId);
   const attempt={commentKey:r.key,created:new Date().toISOString(),status:'sending',text:r.reply,workId:targetId()};attempt.id=storage.attempt('reply_attempts',attempt);r.status='sending';r.attemptDay=today;log(`正在提交回复到抖音：评论 ${r.commentId||r.key}`,{event:'send_start',commentId:r.commentId});await persist();
-  try{lastBrowserSubmission=Date.now();await button.click({timeout:5000});
-    await waitForNewReply(sentMatches,previousCount);r.status='sent';r.deliveryState='done';r.lastError='';r.sentAt=new Date().toISOString();log(`已确认回复：评论 ${r.commentId||r.key}`,{event:'send_success',commentId:r.commentId});
-  }catch(error){r.status='uncertain';r.lastError='提交后未确认新增回复：'+redactText(error.message).split('\n')[0];controls.audit('monitor.paused',{reason:'发送结果不明，请在平台核对，不会自动重发'});log('发送结果不明，请在抖音页面人工核实；不会自动重发');running=false;clearTimeout(timer);}
+  let blockedPublication=false;const publishPattern=/\/comment\/publish\//;const publishGuard=async route=>{if(!matchesPublishRequest(route.request().postData(),{workId:targetId(),parentId:r.commentId,text:r.reply})){blockedPublication=true;await route.abort();return;}await route.fallback();};await page.route(publishPattern,publishGuard);
+  try{lastBrowserSubmission=Date.now();await button.click({timeout:5000});if(blockedPublication)throw Error('已拦截回复目标不匹配的请求，未发布');
+    const confirmation=await waitForPublicationOrReply(sentMatches,previousCount,commentTimes.publications||[],{workId:targetId(),parentId:r.commentId,text:r.reply,ownName:config.ownName,since:lastBrowserSubmission});r.browserConfirmation=confirmation;if(confirmation.replyId)r.browserReplyId=confirmation.replyId;r.status='sent';r.deliveryState='done';r.lastError='';r.sentAt=new Date().toISOString();log(`已确认回复：评论 ${r.commentId||r.key}（${confirmation.method}）`,{event:'send_success',commentId:r.commentId});
+  }catch(error){r.status=blockedPublication?'review':'uncertain';if(blockedPublication)r.reviewRequired=true;r.lastError=blockedPublication?'已阻止发往错误评论或一级评论的请求，未发布':'提交后未确认新增回复：'+redactText(error.message).split('\n')[0];controls.audit('monitor.paused',{reason:r.lastError});log(r.lastError+'；不会自动重发');running=false;clearTimeout(timer);}finally{await page.unroute(publishPattern,publishGuard).catch(()=>{});}
   storage.attempt('reply_attempts',{...attempt,status:r.status,finishedAt:new Date().toISOString(),sentAt:r.sentAt});await persist();
 }
 async function sendOfficial(r,guard=()=>true,rt=null){assertApproved(r);
@@ -406,8 +410,8 @@ async function action(name,body){
     if(name==='reply-inspect'){
       await prepareComments();const rows=page.locator(config.selectors.row).filter({visible:true});if(!await rows.count())throw Error('没有评论可检查');
       const editor=await activateReply(page,rows.first(),config.selectors);
-      try{await editor.fill('回复链路测试（未发送）');await editor.press('End');return {editors:await editor.evaluateAll(els=>els.map(e=>e.outerHTML.slice(0,2000))),shell:await editor.evaluate(e=>{const shells=[];for(let p=e.parentElement,n=0;p&&n<5;p=p.parentElement,n++)shells.push(p.outerHTML.slice(0,24000));return shells;}),buttons:await page.getByText('发送',{exact:true}).evaluateAll(els=>els.filter(e=>e.getClientRects().length).map(e=>e.outerHTML)),text:(await page.locator('body').innerText()).slice(-1500)};}
-      finally{await editor.fill('');}
+      try{await fillReplyEditor(editor,'回复链路测试（未发送）');await editor.press('End');return {editors:await editor.evaluateAll(els=>els.map(e=>e.outerHTML.slice(0,2000))),shell:await editor.evaluate(e=>{const shells=[];for(let p=e.parentElement,n=0;p&&n<5;p=p.parentElement,n++)shells.push(p.outerHTML.slice(0,24000));return shells;}),buttons:await page.getByText('发送',{exact:true}).evaluateAll(els=>els.filter(e=>e.getClientRects().length).map(e=>e.outerHTML)),text:(await page.locator('body').innerText()).slice(-1500)};}
+      finally{await fillReplyEditor(editor,'');}
     }
     if(name==='open-comments'){checkPage();await openComments(page);return {};}
     if(name==='browser-inspect'){

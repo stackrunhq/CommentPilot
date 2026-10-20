@@ -73,3 +73,12 @@ export async function activateReply(page,row,selectors){
   if(await editor.count()!==1)throw Error('无法唯一定位回复输入框');
   return editor;
 }
+export async function fillReplyEditor(editor,text){
+  if(await editor.evaluate(e=>e.classList.contains('public-DraftEditor-content'))){await editor.click();await editor.press('ControlOrMeta+A');await editor.press('Backspace');await editor.pressSequentially(text,{delay:10});}
+  else await editor.fill(text);
+  if((await editor.innerText()).trim()!==text.trim())throw Error('输入框内容未正确同步，未提交回复');
+}
+export async function assertReplyTarget(row,commentId){
+ const active=row.getByText('回复中',{exact:true}).filter({visible:true});if(await active.count()!==1)throw Error('未确认原评论处于回复中，禁止发布为一级评论');
+ const id=await active.evaluate(e=>e.closest('[data-e2e="comment-item"]')?.querySelector('[id^="tooltip_"]')?.id);if(id!==`tooltip_${commentId}`)throw Error('回复目标已变化，未提交');
+}
