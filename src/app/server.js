@@ -1,5 +1,5 @@
 import {approveDraft,assertApproved} from '../comments/approval.js';
-import {readRetry} from '../douyin/browser/read-retry.js';
+import {readRetry,navigationInterrupted} from '../douyin/browser/read-retry.js';
 import {ServiceControls} from '../comments/service-controls.js';
 import {lockDataDirectory} from '../security/data-lock.js';
 import {conversationLimit,followups,threadCount} from '../comments/conversation.js';
@@ -222,7 +222,7 @@ async function runBrowserCycle(){if(!running||busy)return;const began=Date.now()
   for(let processed=0;running&&processed<5;processed++){
     const r=[...records].reverse().find(x=>!x.simulated&&(x.status==='new'||(config.autoSend&&x.status==='draft'&&x.deliveryState==='waiting_dom'))&&x.workId===targetId()&&x.sessionId===monitors[targetId()]?.sessionId);if(!r)break;
     if(controls.control(r.workId,r.rootCommentId||r.commentId).mode!=='auto'||(!r.reviewApproved&&controls.reviewReason(r))){r.status='review';r.reviewRequired=true;r.reason=controls.reviewReason(r)||'对话已转人工或关闭';await persist();continue;}
-    if(r.status==='new')await draft(r);if(running&&config.autoSend&&await send(r,()=>running)===false)break;
+    if(r.status==='new')await draft(r);if(running&&config.autoSend){try{if(await send(r,()=>running)===false)break;}catch(error){if(r.status!=='draft'||!navigationInterrupted(error)||(r.navigationRetries||0)>=2)throw error;r.navigationRetries=(r.navigationRetries||0)+1;r.deliveryState='waiting_dom';r.lastError='页面刷新打断定位，尚未提交，等待页面恢复后定位原评论';log(r.lastError);await persist();break;}}
   }
 }catch(e){logger.write('monitor.failed',{workId:targetId(),outcome:'failed',...errorMetadata(e)},'error');log(redactText(e.message));controls.audit('monitor.paused',{reason:redactText(e.message)});running=false;}finally{busy=false;if(running)timer=setTimeout(cycle,Math.max(pollDelay(config.interval,began),(monitors[targetId()]?.readRetry?.nextAt||0)-Date.now()));}}
 async function runCycle(){return officialMode?runOfficialCycle():runBrowserCycle();}

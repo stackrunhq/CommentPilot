@@ -4,6 +4,7 @@ import path from 'node:path';
 import {tmpdir} from 'node:os';
 import http from 'node:http';
 import assert from 'node:assert/strict';
+import {chromium} from 'playwright';
 const dir=await mkdtemp(path.join(tmpdir(),'cp-browser-auto-')),control=path.join(dir,'state.json'),sends=path.join(dir,'sends.jsonl'),base='http://127.0.0.1:3286';let child;
 const model=http.createServer(async(req,res)=>{for await(const _ of req){}res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:'请参考作品说明办理。'}}]}));});await new Promise(r=>model.listen(19997,'127.0.0.1',r));
 async function post(name,body={},ok=true){const r=await fetch(base+'/api/'+name,{method:'POST',headers:{'x-local-app':'douyin-reply','Content-Type':'application/json'},body:JSON.stringify(body)}),d=await r.json();assert.equal(r.ok,ok,d.error);return d;}
@@ -15,7 +16,8 @@ try{
   const old={cid:'100',text:'历史评论',create_time:Math.floor(Date.now()/1000)-3600,user:{nickname:'fan'}};const fixture={comments:[old]};await writeFile(control,JSON.stringify(fixture));await writeFile(sends,'');await start();
   const c=await post('connections-save',{provider:'custom',name:'local',protocol:'chat',auth:'none',baseUrl:'http://127.0.0.1:19997/v1',model:'fixture',makeDefault:true});await post('personal-work',{url:'https://www.douyin.com/video/123',title:'test',context:'作品说明：参考说明办理',connectionId:c.id});await post('browser-personal-enable',{enabled:true});assert.equal((await state()).transport,'personal-browser');
   await post('browser-personal-config',{ownName:'Owner',interval:10,dailyLimit:2,autoSend:true});await post('browser');await post('verify',{},false);await post('verify',{confirmed:true});await post('start');assert.equal((await state()).monitor.baselineCount,1);
-  fixture.readFailures=1;fixture.comments.push({cid:'101',text:'新评论',create_time:Math.ceil(Date.now()/1000)+1,user:{nickname:'fan'}},{cid:'102',text:'自己的评论',create_time:Math.ceil(Date.now()/1000)+1,user:{nickname:'Owner'}});await writeFile(control,JSON.stringify(fixture));
+  const ui=await chromium.launch({headless:true});try{const tab=await ui.newPage();const original=(await state()).monitor.sessionId;await tab.goto(base);await tab.waitForSelector('#servicePanel');await tab.reload();await tab.waitForSelector('#servicePanel');assert.equal((await state()).running,true,'workbench refresh must not stop backend');assert.equal((await state()).monitor.sessionId,original,'workbench refresh must retain baseline');}finally{await ui.close();}
+  fixture.navigationAbort=true;fixture.readFailures=1;fixture.comments.push({cid:'101',text:'新评论',create_time:Math.ceil(Date.now()/1000)+1,user:{nickname:'fan'}},{cid:'102',text:'自己的评论',create_time:Math.ceil(Date.now()/1000)+1,user:{nickname:'Owner'}});await writeFile(control,JSON.stringify(fixture));
   await until(s=>s.running&&s.monitor?.readRetry?.attempts===1);fixture.readFailures=0;
   await until(s=>s.records.some(r=>r.commentId==='101'&&r.status==='sent'));await post('stop');await until(s=>!s.busy);let lines=(await readFile(sends,'utf8')).trim().split('\n').map(JSON.parse);assert.deepEqual(lines.map(x=>x.id),['101']);assert.equal((await state()).records.find(r=>r.commentId==='100').status,'ignored_history');assert.equal((await state()).records.find(r=>r.commentId==='102').status,'ignored_own');
   await post('browser-personal-config',{ownName:'Owner',interval:10,dailyLimit:20,autoSend:true,maxReplyRounds:3});
