@@ -40,7 +40,7 @@ export async function openComments(page){
   const button=active.locator('[data-e2e="feed-comment-icon"]').filter({visible:true});
   await button.waitFor({state:'visible',timeout:15000});
   if(await button.count()!==1)throw Error('未能唯一定位当前作品评论入口，请手动展开评论区');
-  await button.click({timeout:5000});
+  await button.click({timeout:12000});
   await page.locator('[data-e2e="comment-list"]').filter({visible:true}).waitFor({state:'visible',timeout:20000});
 }
 export async function waitForCommentData(page){

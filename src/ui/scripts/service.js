@@ -13,6 +13,7 @@ function serviceText(tag,text){const node=document.createElement(tag);node.textC
 async function refreshService(force=false){if(!state||(!force&&Date.now()-lastServiceRefresh<5000))return;const data=await post('service-status');lastServiceRefresh=Date.now();const u=data.usage,p=data.policy;
  $('serviceHealth').textContent=`今日评论模型调用 ${u.calls}/${p.dailyModelCalls} · 已知Token ${u.tokens}/${p.dailyTokens} · ${u.unknownTokenCalls}次未提供Token用量 · ${state.running?'正在监听':'已暂停'}`;
  if(data.runtime.scan)$('serviceHealth').textContent+=` · 最近读取${data.runtime.scan.visible}条，其中新增${data.runtime.scan.added}条（不代表全部评论）`;
+ if(state.running&&state.monitor?.readRetry)$('serviceHealth').textContent+=` · 页面读取重试${state.monitor.readRetry.attempts}/2，未重发任何回复`;
  if(data.runtime.lastErrors.length)$('serviceHealth').textContent+=' · 最近异常：'+data.runtime.lastErrors.map(e=>e.message).join('；');
  const monitorEvent=data.audit.find(e=>e.action.startsWith('monitor.'));if(!state.running&&monitorEvent?.action==='monitor.paused')$('serviceHealth').textContent+=' · 暂停原因：'+monitorEvent.data.reason+'；修复后重新检查，结果不明的回复先在平台核对';
  if(!servicePolicyLoaded){$('serviceCalls').value=p.dailyModelCalls;$('serviceTokens').value=p.dailyTokens;$('servicePending').value=p.maxPending;$('serviceRetention').value=p.retentionDays;$('serviceKeywords').value=p.reviewKeywords;$('serviceAutoMaintenance').checked=!!p.autoMaintenance;servicePolicyLoaded=true;}

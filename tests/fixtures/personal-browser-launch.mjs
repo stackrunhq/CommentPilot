@@ -1,9 +1,10 @@
 // Explicit preload for isolated tests only: render a synthetic page and capture its posts.
 import {chromium} from 'playwright';
-import {readFile,appendFile} from 'node:fs/promises';
+import {readFile,appendFile,writeFile} from 'node:fs/promises';
 const launch=chromium.launchPersistentContext.bind(chromium);
 chromium.launchPersistentContext=async(dir,options)=>{
   const context=await launch(dir,{...options,headless:true});
+  function inject(page){const reload=page.reload.bind(page);page.reload=async(...args)=>{const state=JSON.parse(await readFile(process.env.PERSONAL_BROWSER_TEST_STATE,'utf8'));if(state.readFailures>0){state.readFailures--;await writeFile(process.env.PERSONAL_BROWSER_TEST_STATE,JSON.stringify(state));throw Object.assign(Error('page.reload: Timeout 30000ms exceeded'),{name:'TimeoutError'});}return reload(...args);};}for(const page of context.pages())inject(page);context.on('page',inject);
   await context.route('https://www.douyin.com/**',async route=>{
     const url=new URL(route.request().url()),state=JSON.parse(await readFile(process.env.PERSONAL_BROWSER_TEST_STATE,'utf8'));
     if(url.pathname==='/fixture/send'){await appendFile(process.env.PERSONAL_BROWSER_TEST_SENDS,route.request().postData()+'\n');return route.fulfill({json:{ok:true}});}

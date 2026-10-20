@@ -1,4 +1,5 @@
 import {approveDraft,assertApproved} from '../comments/approval.js';
+import {readRetry} from '../douyin/browser/read-retry.js';
 import {ServiceControls} from '../comments/service-controls.js';
 import {lockDataDirectory} from '../security/data-lock.js';
 import {conversationLimit,followups,threadCount} from '../comments/conversation.js';
@@ -187,7 +188,7 @@ async function send(r,guard=()=>true,options={}){if(officialMode)return sendOffi
   const attempt={commentKey:r.key,created:new Date().toISOString(),status:'sending',text:r.reply,workId:targetId()};attempt.id=storage.attempt('reply_attempts',attempt);r.status='sending';r.attemptDay=today;log(`正在提交回复到抖音：评论 ${r.commentId||r.key}`,{event:'send_start',commentId:r.commentId});await persist();
   try{lastBrowserSubmission=Date.now();await button.click({timeout:5000});
     await waitForNewReply(sentMatches,previousCount);r.status='sent';r.deliveryState='done';r.lastError='';r.sentAt=new Date().toISOString();log(`已确认回复：评论 ${r.commentId||r.key}`,{event:'send_success',commentId:r.commentId});
-  }catch{r.status='uncertain';log('发送结果不明，请在抖音页面人工核实；不会自动重发');running=false;clearTimeout(timer);}
+  }catch(error){r.status='uncertain';r.lastError='提交后未确认新增回复：'+redactText(error.message).split('\n')[0];controls.audit('monitor.paused',{reason:'发送结果不明，请在平台核对，不会自动重发'});log('发送结果不明，请在抖音页面人工核实；不会自动重发');running=false;clearTimeout(timer);}
   storage.attempt('reply_attempts',{...attempt,status:r.status,finishedAt:new Date().toISOString(),sentAt:r.sentAt});await persist();
 }
 async function sendOfficial(r,guard=()=>true,rt=null){assertApproved(r);
@@ -216,13 +217,14 @@ async function sendOfficial(r,guard=()=>true,rt=null){assertApproved(r);
 }
 async function cycle(){return logger.operation('monitor.cycle',runCycle,{workId:targetId()});}
 async function runBrowserCycle(){if(!running||busy)return;const began=Date.now();busy=true;try{
-  checkPage();if(!officialMode){navigationStartedAt=Date.now();await page.reload({waitUntil:'domcontentloaded',timeout:30000});}if(!running)return;await collect();
+  try{checkPage();navigationStartedAt=Date.now();await page.reload({waitUntil:'domcontentloaded',timeout:30000});if(!running)return;await collect();if(monitors[targetId()])monitors[targetId()].readRetry=null;}
+  catch(error){const session=monitors[targetId()],retry=readRetry(error,session?.readRetry?.attempts||0);if(!session||!retry)throw error;session.readRetry=retry;log(`评论页面暂未稳定，正在进行第${retry.attempts}次读取重试（最多2次），不会重新发送已提交回复`);await persist();return;}
   for(let processed=0;running&&processed<5;processed++){
     const r=[...records].reverse().find(x=>!x.simulated&&(x.status==='new'||(config.autoSend&&x.status==='draft'&&x.deliveryState==='waiting_dom'))&&x.workId===targetId()&&x.sessionId===monitors[targetId()]?.sessionId);if(!r)break;
     if(controls.control(r.workId,r.rootCommentId||r.commentId).mode!=='auto'||(!r.reviewApproved&&controls.reviewReason(r))){r.status='review';r.reviewRequired=true;r.reason=controls.reviewReason(r)||'对话已转人工或关闭';await persist();continue;}
     if(r.status==='new')await draft(r);if(running&&config.autoSend&&await send(r,()=>running)===false)break;
   }
-}catch(e){logger.write('monitor.failed',{workId:targetId(),outcome:'failed',...errorMetadata(e)},'error');log(redactText(e.message));controls.audit('monitor.paused',{reason:redactText(e.message)});running=false;}finally{busy=false;if(running)timer=setTimeout(cycle,pollDelay(config.interval,began));}}
+}catch(e){logger.write('monitor.failed',{workId:targetId(),outcome:'failed',...errorMetadata(e)},'error');log(redactText(e.message));controls.audit('monitor.paused',{reason:redactText(e.message)});running=false;}finally{busy=false;if(running)timer=setTimeout(cycle,Math.max(pollDelay(config.interval,began),(monitors[targetId()]?.readRetry?.nextAt||0)-Date.now()));}}
 async function runCycle(){return officialMode?runOfficialCycle():runBrowserCycle();}
 async function runOfficialCycle(){if(!running||busy)return;const began=Date.now();busy=true;try{
   checkPage();const session=monitors[targetId()];if(session?.account!==official.accountFingerprint())throw Error('授权账号已变化，请重新建立监听');
@@ -232,7 +234,7 @@ async function runOfficialCycle(){if(!running||busy)return;const began=Date.now(
   }
   if(running)await worker.process();
 }catch(error){logger.write('monitor.failed',{workId:targetId(),outcome:'failed',...errorMetadata(error)},'error');log(redactText(error.message));running=false;}
-finally{busy=false;if(running)timer=setTimeout(cycle,pollDelay(config.interval,began));}}
+finally{busy=false;if(running)timer=setTimeout(cycle,Math.max(pollDelay(config.interval,began),(monitors[targetId()]?.readRetry?.nextAt||0)-Date.now()));}}
 async function reconcileRecord(r,id=targetId(),client=official){
   const official=client;
   const targetId=()=>id;

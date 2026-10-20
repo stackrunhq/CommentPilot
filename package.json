@@ -1,6 +1,6 @@
 {
   "name": "commentpilot",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "CommentPilot 多模型评论回复工作台",
   "author": "CommentPilot",
   "private": true,

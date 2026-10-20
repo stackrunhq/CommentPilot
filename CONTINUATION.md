@@ -1,3 +1,9 @@
+## 2026-10-20 0.13.1 读取超时暂停修复
+
+真实日志定位：10:40:34评论按钮因元素不稳定点击超时导致暂停；10:36另有已提交回复未检测到回显而uncertain，模型已成功生成。不能把结果不明当作发送失败。
+
+修复：评论入口稳定等待从5秒增至12秒；仅刷新/读取阶段临时超时重试最多2次，间隔至少10秒，连续3次失败暂停。登录、验证码、定位歧义和模型/发送异常不走读取重试。发送不明补充lastError与暂停原因，不自动重发。新增read-retry.js及单元测试，夹具注入一次reload超时验证恢复。真实浏览器页面和不明回复未重新提交。
+
 ## 2026-10-20 0.13.0 可靠性与历史性能
 
 - 审核绑定作品/评论/草稿/资料hash；改动后重新审核，旧布尔审核标记无效。个人及官方批量审核共用校验；官方队列遇到旧/变化版本回待审。
@@ -222,3 +228,5 @@
 0.12运行验收：备份data/backups/CommentPilot-1792457885638.sqlite后重启PID52468；health=0.12.0，personal-browser，running=false/busy=false，原4条评论及1个连接保留。自动维护默认false。新增test:service实际点击验证维护策略保存；85单元及service/personal/personal-browser/official/official-flow/projects/multiwork/diagnostics通过。实际页面零脚本异常、390px无横向溢出。官方服务及并发设置折叠到高级区。截图data/ui-service.png、data/ui-maintenance.png未纳入版本。
 
 0.13运行验收：备份data/backups/CommentPilot-1792459064315.sqlite后重启PID43288；health0.13.0，running=false/busy=false，当前10条记录/2连接（用户本机数据，未用于模拟测试）。实际页面零脚本异常、390px无横向溢出。真实平台未发送，未打包。
+
+0.13.1更新结果：先备份并通过browser-personal-enable安全关闭真实浏览器，保留登录资料，再重启PID60404；健康0.13.1，监听暂停，原uncertain未重发。90单元、service及注入一次刷新超时的personal-browser全流程通过。个人页签在已为个人模式时不重复请求模式修改，避免监听中无谓报错。
